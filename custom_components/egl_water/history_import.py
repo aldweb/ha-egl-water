@@ -147,10 +147,14 @@ async def async_push_new_entries(
     if not entries:
         return last_known_date
 
-    # Filtrer les jours strictement après la dernière date connue
+    # Filtrer les jours strictement après la dernière date connue,
+    # ET avec une consommation > 0 : un 0 signifie "non encore publié par EGL",
+    # pas une vraie consommation nulle. Pousser ces jours créerait des
+    # discontinuités de sum quand les vraies valeurs arrivent ensuite.
     new_entries = [
         e for e in entries
-        if last_known_date is None or e["date"] > last_known_date
+        if (last_known_date is None or e["date"] > last_known_date)
+        and e["liters"] > 0
     ]
 
     if not new_entries:
@@ -166,16 +170,19 @@ async def async_push_new_entries(
 
     statistic_id = f"{DOMAIN}:{sensor_unique_id.lower().replace('-', '_')}"
 
-    # Récupérer le sum cumulatif du dernier jour AVANT la première nouvelle entrée.
-    # On utilise une fenêtre [J-2, J-1] strictement antérieure pour éviter
-    # de récupérer la stat du jour J lui-même si elle existe déjà dans recorder.
+    # Récupérer le sum cumulatif du dernier jour strictement AVANT la première
+    # nouvelle entrée. On remonte jusqu'à 40 jours pour être robuste aux trous
+    # de publication EGL (plusieurs jours consécutifs non publiés).
+    # La borne de fin est first_new_dt : en mode "day", statistics_during_period
+    # retourne les stats dont start >= borne_debut ET start < borne_fin,
+    # ce qui exclut bien le jour first_new_dt lui-même.
     instance = get_instance(hass)
     first_new_dt = datetime.strptime(new_entries[0]["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     prior_stats = await instance.async_add_executor_job(
         statistics_during_period,
         hass,
-        first_new_dt - timedelta(days=2),
-        first_new_dt - timedelta(days=1),
+        first_new_dt - timedelta(days=40),
+        first_new_dt,
         {statistic_id},
         "day",
         None,
@@ -184,6 +191,11 @@ async def async_push_new_entries(
     current_sum = 0.0
     if prior_stats and statistic_id in prior_stats and prior_stats[statistic_id]:
         current_sum = prior_stats[statistic_id][-1].get("sum") or 0.0
+        _LOGGER.debug(
+            "EGL: sum cumulatif de référence = %.0f L (avant %s)",
+            current_sum,
+            new_entries[0]["date"],
+        )
 
     metadata = _build_metadata(statistic_id)
     stats = _entries_to_stats(new_entries, initial_sum=current_sum)
