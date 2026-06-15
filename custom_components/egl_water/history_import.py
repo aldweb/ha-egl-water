@@ -99,7 +99,7 @@ async def async_import_history(
             )
         except EGLApiError as err:
             _LOGGER.warning("EGL: erreur tranche %s : %s", chunk_start.strftime("%Y-%m-%d"), err)
-        chunk_start = chunk_end + timedelta(days=1)
+        chunk_start = chunk_end
 
     if not all_entries:
         _LOGGER.warning("EGL: aucune donnée historique récupérée")
@@ -166,15 +166,16 @@ async def async_push_new_entries(
 
     statistic_id = f"{DOMAIN}:{sensor_unique_id.lower().replace('-', '_')}"
 
-    # Récupérer le sum cumulatif du dernier jour AVANT la première nouvelle entrée,
-    # pour continuer la série sans corruption si des jours déjà importés sont dans la fenêtre.
+    # Récupérer le sum cumulatif du dernier jour AVANT la première nouvelle entrée.
+    # On utilise une fenêtre [J-2, J-1] strictement antérieure pour éviter
+    # de récupérer la stat du jour J lui-même si elle existe déjà dans recorder.
     instance = get_instance(hass)
     first_new_dt = datetime.strptime(new_entries[0]["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     prior_stats = await instance.async_add_executor_job(
         statistics_during_period,
         hass,
+        first_new_dt - timedelta(days=2),
         first_new_dt - timedelta(days=1),
-        first_new_dt,
         {statistic_id},
         "day",
         None,

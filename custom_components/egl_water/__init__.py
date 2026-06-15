@@ -38,7 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Import historique initial : une seule fois, en tâche de fond
     if not entry.data.get(CONF_HISTORY_IMPORTED, False):
         hass.async_create_task(
-            _async_run_history_import(hass, entry, client, contract_token)
+            _async_run_history_import(hass, entry, client, contract_token, coordinator)
         )
 
     return True
@@ -49,9 +49,10 @@ async def _async_run_history_import(
     entry: ConfigEntry,
     client: EGLClient,
     contract_token: str,
+    coordinator: "EGLDataCoordinator",
 ) -> None:
     """Import initial en tâche de fond. Pose le flag et mémorise la dernière date."""
-    sensor_unique_id = f"{entry.entry_id}_daily"
+    sensor_unique_id = coordinator._sensor_unique_id
     try:
         count, last_date = await async_import_history(
             hass, client, contract_token, sensor_unique_id
