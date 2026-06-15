@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 from homeassistant.components.recorder.statistics import (
-    async_import_statistics,
+    async_add_external_statistics,
     get_last_statistics,
 )
 from homeassistant.const import UnitOfVolume
@@ -59,7 +59,7 @@ def _entries_to_stats(entries: list[dict], initial_sum: float = 0.0) -> list[Sta
 
 def _do_import(hass: HomeAssistant, metadata: StatisticMetaData, stats: list[StatisticData]) -> None:
     """Exécuté dans le thread executor de recorder."""
-    async_import_statistics(hass, metadata, stats)
+    async_add_external_statistics(hass, metadata, stats)
 
 
 # ---------------------------------------------------------------------------
