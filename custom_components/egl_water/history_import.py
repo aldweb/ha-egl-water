@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 from homeassistant.components.recorder.statistics import (
+    StatisticMeanType,
     async_add_external_statistics,
     get_last_statistics,
 )
@@ -38,6 +39,7 @@ def _build_metadata(statistic_id: str) -> StatisticMetaData:
     return StatisticMetaData(
         has_mean=False,
         has_sum=True,
+        mean_type=StatisticMeanType.NONE,
         name="Consommation journalière eau",
         source=DOMAIN,
         statistic_id=statistic_id,
@@ -56,10 +58,6 @@ def _entries_to_stats(entries: list[dict], initial_sum: float = 0.0) -> list[Sta
         stats.append(StatisticData(start=dt, state=liters, sum=cumulative))
     return stats
 
-
-def _do_import(hass: HomeAssistant, metadata: StatisticMetaData, stats: list[StatisticData]) -> None:
-    """Exécuté dans le thread executor de recorder."""
-    async_add_external_statistics(hass, metadata, stats)
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +117,7 @@ async def async_import_history(
     metadata = _build_metadata(statistic_id)
     stats = _entries_to_stats(unique)
 
-    await get_instance(hass).async_add_executor_job(_do_import, hass, metadata, stats)
+    async_add_external_statistics(hass, metadata, stats)
 
     last_date = unique[-1]["date"] if unique else None
     _LOGGER.info("EGL: import initial terminé — %d jours, dernier : %s", len(stats), last_date)
@@ -178,7 +176,7 @@ async def async_push_new_entries(
 
     metadata = _build_metadata(statistic_id)
     stats = _entries_to_stats(new_entries, initial_sum=current_sum)
-    await instance.async_add_executor_job(_do_import, hass, metadata, stats)
+    async_add_external_statistics(hass, metadata, stats)
 
     new_last_date = new_entries[-1]["date"]
     _LOGGER.debug("EGL: push incrémental OK, nouvelle dernière date : %s", new_last_date)
