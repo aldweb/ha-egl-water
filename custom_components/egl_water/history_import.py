@@ -24,10 +24,11 @@ from homeassistant.components.recorder.models import StatisticData, StatisticMet
 from homeassistant.components.recorder.statistics import (
     StatisticMeanType,
     async_add_external_statistics,
-    get_last_statistics,
+    statistics_during_period,
 )
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
+from homeassistant.util.unit_conversion import VolumeConverter
 
 from .api import EGLApiError, EGLClient
 from .const import CHUNK_DAYS, DOMAIN, HISTORY_YEARS
@@ -43,6 +44,7 @@ def _build_metadata(statistic_id: str) -> StatisticMetaData:
         name="Consommation journalière eau",
         source=DOMAIN,
         statistic_id=statistic_id,
+        unit_class=VolumeConverter.UNIT_CLASS,
         unit_of_measurement=UnitOfVolume.LITERS,
     )
 
@@ -57,7 +59,6 @@ def _entries_to_stats(entries: list[dict], initial_sum: float = 0.0) -> list[Sta
         dt = datetime.strptime(entry["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
         stats.append(StatisticData(start=dt, state=liters, sum=cumulative))
     return stats
-
 
 
 # ---------------------------------------------------------------------------
@@ -165,14 +166,23 @@ async def async_push_new_entries(
 
     statistic_id = f"{DOMAIN}:{sensor_unique_id.lower().replace('-', '_')}"
 
-    # Récupérer le sum cumulatif actuel depuis recorder pour continuer la série
+    # Récupérer le sum cumulatif du dernier jour AVANT la première nouvelle entrée,
+    # pour continuer la série sans corruption si des jours déjà importés sont dans la fenêtre.
     instance = get_instance(hass)
-    last_stats = await instance.async_add_executor_job(
-        get_last_statistics, hass, 1, statistic_id, True, {"sum"}
+    first_new_dt = datetime.strptime(new_entries[0]["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    prior_stats = await instance.async_add_executor_job(
+        statistics_during_period,
+        hass,
+        first_new_dt - timedelta(days=1),
+        first_new_dt,
+        {statistic_id},
+        "day",
+        None,
+        {"sum"},
     )
     current_sum = 0.0
-    if last_stats and statistic_id in last_stats:
-        current_sum = last_stats[statistic_id][0].get("sum") or 0.0
+    if prior_stats and statistic_id in prior_stats and prior_stats[statistic_id]:
+        current_sum = prior_stats[statistic_id][-1].get("sum") or 0.0
 
     metadata = _build_metadata(statistic_id)
     stats = _entries_to_stats(new_entries, initial_sum=current_sum)
