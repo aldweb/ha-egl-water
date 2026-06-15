@@ -115,7 +115,7 @@ async def async_import_history(
             unique.append(e)
     unique.sort(key=lambda x: x["date"])
 
-    statistic_id = f"sensor.{sensor_unique_id}"
+    statistic_id = f"{DOMAIN}:{sensor_unique_id}"
     metadata = _build_metadata(statistic_id)
     stats = _entries_to_stats(unique)
 
@@ -165,7 +165,7 @@ async def async_push_new_entries(
         new_entries[-1]["date"],
     )
 
-    statistic_id = f"sensor.{sensor_unique_id}"
+    statistic_id = f"{DOMAIN}:{sensor_unique_id}"
 
     # Récupérer le sum cumulatif actuel depuis recorder pour continuer la série
     instance = get_instance(hass)
