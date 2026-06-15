@@ -75,6 +75,7 @@ class EGLDailySensor(_EGLBaseSensor):
         data = self.coordinator.data or {}
         return {
             "date": data.get("daily_date"),
+            "retard_publication_jours": data.get("daily_lag_days"),
             "last_update": data.get("last_update"),
         }
 
