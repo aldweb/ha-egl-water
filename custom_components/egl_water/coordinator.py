@@ -54,7 +54,11 @@ class EGLDataCoordinator(DataUpdateCoordinator):
         self._entry = entry
         self._client = client
         self._contract_token = contract_token
-        self._sensor_unique_id = f"{entry.entry_id}_daily"
+        # Prend la partie locale de l'email (avant @) comme slug, ou le username entier si pas un email
+        raw = entry.data["username"].lower()
+        local_part = raw.split("@")[0] if "@" in raw else raw
+        username_slug = local_part.replace(".", "_").replace("-", "_")
+        self._sensor_unique_id = f"{username_slug}_daily"
         self._unsub_timers: list[Any] = []
 
     # ------------------------------------------------------------------
