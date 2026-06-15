@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Eau du Grand Lyon",
+        "description": "Saisissez vos identifiants de l'espace client agence.eaudugrandlyon.com",
+        "data": {
+          "username": "Adresse e-mail",
+          "password": "Mot de passe"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Identifiants incorrects. Vérifiez votre e-mail et mot de passe.",
+      "cannot_connect": "Impossible de contacter le serveur Eau du Grand Lyon."
+    },
+    "abort": {
+      "already_configured": "Ce compte est déjà configuré."
+    }
+  }
+}
