@@ -50,8 +50,11 @@ def _build_metadata(statistic_id: str) -> StatisticMetaData:
     )
 
 
-def _entries_to_stats(entries: list[dict], initial_sum: float = 0.0) -> list[StatisticData]:
-    """Convertit une liste triée d'entrées en StatisticData avec sum cumulatif."""
+def _entries_to_stats(entries: list[dict], initial_sum: float = 0.0) -> tuple[list[StatisticData], float]:
+    """Convertit une liste triée d'entrées en StatisticData avec sum cumulatif.
+
+    Retourne (stats, cumulative_final) pour éviter d'accéder aux internals de StatisticData.
+    """
     stats: list[StatisticData] = []
     cumulative = initial_sum
     for entry in entries:
@@ -59,7 +62,7 @@ def _entries_to_stats(entries: list[dict], initial_sum: float = 0.0) -> list[Sta
         cumulative += liters
         dt = datetime.strptime(entry["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
         stats.append(StatisticData(start=dt, state=liters, sum=cumulative))
-    return stats
+    return stats, cumulative
 
 
 def _statistic_id(sensor_unique_id: str) -> str:
@@ -157,16 +160,17 @@ async def async_import_history(
 
     statistic_id = _statistic_id(sensor_unique_id)
     metadata = _build_metadata(statistic_id)
-    stats = _entries_to_stats(unique)
+    stats, final_sum = _entries_to_stats(unique)
 
     async_add_external_statistics(hass, metadata, stats)
 
     last_date = unique[-1]["date"] if unique else None
     _LOGGER.info(
-        "EGL: import historique terminé — %d jour(s) importé(s), premier : %s, dernier : %s",
+        "EGL: import historique terminé — %d jour(s) importé(s), premier : %s, dernier : %s, sum final : %.0f L",
         len(stats),
         unique[0]["date"],
         last_date,
+        final_sum,
     )
     return len(stats), last_date
 
@@ -248,13 +252,13 @@ async def async_push_new_entries(
         )
 
     metadata = _build_metadata(statistic_id)
-    stats = _entries_to_stats(new_entries, initial_sum=current_sum)
+    stats, final_sum = _entries_to_stats(new_entries, initial_sum=current_sum)
     async_add_external_statistics(hass, metadata, stats)
 
     new_last_date = new_entries[-1]["date"]
     _LOGGER.info(
         "EGL: push incrémental OK — nouvelle dernière date : %s (sum cumulatif : %.0f L)",
         new_last_date,
-        stats[-1].sum,
+        final_sum,
     )
     return new_last_date
