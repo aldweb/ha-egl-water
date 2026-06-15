@@ -1,18 +1,16 @@
 """Import et mise à jour des statistiques de consommation dans recorder HA.
 
 Deux usages :
-  1. `async_import_history`  — import initial complet (2 ans), appelé une seule fois.
+  1. `async_import_history`  — import initial complet (2 ans), avec purge préalable.
   2. `async_push_new_entries` — push incrémental, appelé à chaque refresh du coordinator.
-     Reçoit la liste brute des entrées fetchées et insère TOUS les jours nouveaux ou
-     mis à jour, sans hypothèse sur leur nombre ni leur régularité de publication.
+     Reçoit la liste brute des entrées fetchées et insère tous les jours nouveaux
+     avec une consommation > 0 (0 = non encore publié par EGL).
 
 Modèle de données recorder :
   - `state`  = consommation du jour (litres)
   - `sum`    = compteur cumulatif croissant depuis le début de l'historique
                (obligatoire pour que le tableau de bord Énergie calcule les deltas)
   - timestamp = minuit UTC du jour concerné
-  - L'import est idempotent : recorder écrase les valeurs existantes sur les mêmes
-    timestamps → pas de doublons même si on repasse sur des jours déjà importés.
 """
 from __future__ import annotations
 
@@ -24,6 +22,9 @@ from homeassistant.components.recorder.models import StatisticData, StatisticMet
 from homeassistant.components.recorder.statistics import (
     StatisticMeanType,
     async_add_external_statistics,
+    clear_statistics,
+    get_instance,
+    list_statistic_ids,
     statistics_during_period,
 )
 from homeassistant.const import UnitOfVolume
@@ -61,8 +62,32 @@ def _entries_to_stats(entries: list[dict], initial_sum: float = 0.0) -> list[Sta
     return stats
 
 
+def _statistic_id(sensor_unique_id: str) -> str:
+    return f"{DOMAIN}:{sensor_unique_id.lower().replace('-', '_')}"
+
+
 # ---------------------------------------------------------------------------
-# Import initial (appelé une seule fois au premier démarrage)
+# Purge des statistiques existantes
+# ---------------------------------------------------------------------------
+
+async def async_clear_history(hass: HomeAssistant, sensor_unique_id: str) -> None:
+    """Supprime toutes les statistiques recorder pour ce capteur."""
+    statistic_id = _statistic_id(sensor_unique_id)
+    instance = get_instance(hass)
+
+    # Vérifier que la série existe avant de purger
+    existing = await instance.async_add_executor_job(
+        list_statistic_ids, hass, {statistic_id}, "day"
+    )
+    if existing:
+        await instance.async_add_executor_job(clear_statistics, instance, [statistic_id])
+        _LOGGER.info("EGL: statistiques purgées pour %s", statistic_id)
+    else:
+        _LOGGER.debug("EGL: aucune statistique existante à purger pour %s", statistic_id)
+
+
+# ---------------------------------------------------------------------------
+# Import initial (avec purge préalable)
 # ---------------------------------------------------------------------------
 
 async def async_import_history(
@@ -71,7 +96,7 @@ async def async_import_history(
     contract_token: str,
     sensor_unique_id: str,
 ) -> tuple[int, str | None]:
-    """Importe 2 ans d'historique dans recorder.
+    """Purge les stats existantes puis importe 2 ans d'historique dans recorder.
 
     Retourne (nombre_de_jours_importés, dernière_date_importée | None).
     """
@@ -79,33 +104,49 @@ async def async_import_history(
     start = now - timedelta(days=HISTORY_YEARS * 365)
 
     _LOGGER.info(
-        "EGL: import initial du %s au %s",
+        "EGL: début import historique — période %s → %s",
         start.strftime("%Y-%m-%d"),
         now.strftime("%Y-%m-%d"),
     )
 
+    # Purge préalable pour repartir d'une ardoise propre
+    await async_clear_history(hass, sensor_unique_id)
+
+    # Téléchargement par tranches de CHUNK_DAYS jours
     all_entries: list[dict] = []
     chunk_start = start
+    chunk_num = 0
     while chunk_start < now:
         chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS), now)
+        chunk_num += 1
         try:
             entries = await client.fetch_daily_consumption(contract_token, chunk_start, chunk_end)
-            all_entries.extend(entries)
-            _LOGGER.debug(
-                "EGL: tranche %s→%s : %d jours",
+            # Ne conserver que les jours avec consommation publiée (> 0)
+            published = [e for e in entries if e["liters"] > 0]
+            all_entries.extend(published)
+            _LOGGER.info(
+                "EGL: tranche %d — %s → %s : %d jour(s) reçu(s), %d publié(s)",
+                chunk_num,
                 chunk_start.strftime("%Y-%m-%d"),
                 chunk_end.strftime("%Y-%m-%d"),
                 len(entries),
+                len(published),
             )
         except EGLApiError as err:
-            _LOGGER.warning("EGL: erreur tranche %s : %s", chunk_start.strftime("%Y-%m-%d"), err)
+            _LOGGER.warning(
+                "EGL: erreur tranche %d (%s → %s) : %s",
+                chunk_num,
+                chunk_start.strftime("%Y-%m-%d"),
+                chunk_end.strftime("%Y-%m-%d"),
+                err,
+            )
         chunk_start = chunk_end
 
     if not all_entries:
-        _LOGGER.warning("EGL: aucune donnée historique récupérée")
+        _LOGGER.warning("EGL: import historique — aucune donnée récupérée sur 2 ans")
         return 0, None
 
-    # Dédoublonnage + tri
+    # Dédoublonnage + tri chronologique
     seen: set[str] = set()
     unique: list[dict] = []
     for e in all_entries:
@@ -114,14 +155,19 @@ async def async_import_history(
             unique.append(e)
     unique.sort(key=lambda x: x["date"])
 
-    statistic_id = f"{DOMAIN}:{sensor_unique_id.lower().replace('-', '_')}"
+    statistic_id = _statistic_id(sensor_unique_id)
     metadata = _build_metadata(statistic_id)
     stats = _entries_to_stats(unique)
 
     async_add_external_statistics(hass, metadata, stats)
 
     last_date = unique[-1]["date"] if unique else None
-    _LOGGER.info("EGL: import initial terminé — %d jours, dernier : %s", len(stats), last_date)
+    _LOGGER.info(
+        "EGL: import historique terminé — %d jour(s) importé(s), premier : %s, dernier : %s",
+        len(stats),
+        unique[0]["date"],
+        last_date,
+    )
     return len(stats), last_date
 
 
@@ -135,22 +181,19 @@ async def async_push_new_entries(
     sensor_unique_id: str,
     last_known_date: str | None,
 ) -> str | None:
-    """Pousse dans recorder tous les jours plus récents que last_known_date.
+    """Pousse dans recorder tous les jours nouveaux avec consommation publiée (> 0).
 
-    - `entries` : liste triée de {"date": "YYYY-MM-DD", "liters": float}
+    - `entries`         : liste triée de {"date": "YYYY-MM-DD", "liters": float}
     - `last_known_date` : dernière date déjà en base (None = première fois)
     - Retourne la nouvelle dernière date importée (ou last_known_date si rien de neuf).
 
-    Gère les publications groupées : si EGL publie vendredi+samedi le mardi,
-    tous ces jours sont insérés en un seul appel.
+    Un jour à 0 litre signifie "non encore publié par EGL" et est ignoré :
+    le pousser créerait une discontinuité de sum quand la vraie valeur arrive ensuite.
     """
     if not entries:
         return last_known_date
 
-    # Filtrer les jours strictement après la dernière date connue,
-    # ET avec une consommation > 0 : un 0 signifie "non encore publié par EGL",
-    # pas une vraie consommation nulle. Pousser ces jours créerait des
-    # discontinuités de sum quand les vraies valeurs arrivent ensuite.
+    # Filtrer : strictement après la dernière date connue ET consommation publiée
     new_entries = [
         e for e in entries
         if (last_known_date is None or e["date"] > last_known_date)
@@ -158,24 +201,25 @@ async def async_push_new_entries(
     ]
 
     if not new_entries:
-        _LOGGER.debug("EGL: aucun nouveau jour à pousser (dernier connu : %s)", last_known_date)
+        _LOGGER.debug(
+            "EGL: refresh — aucun nouveau jour publié (dernier connu : %s)",
+            last_known_date,
+        )
         return last_known_date
 
     _LOGGER.info(
-        "EGL: %d nouveau(x) jour(s) à importer (%s → %s)",
+        "EGL: refresh — %d nouveau(x) jour(s) publié(s) : %s → %s",
         len(new_entries),
         new_entries[0]["date"],
         new_entries[-1]["date"],
     )
 
-    statistic_id = f"{DOMAIN}:{sensor_unique_id.lower().replace('-', '_')}"
+    statistic_id = _statistic_id(sensor_unique_id)
 
-    # Récupérer le sum cumulatif du dernier jour strictement AVANT la première
-    # nouvelle entrée. On remonte jusqu'à 40 jours pour être robuste aux trous
-    # de publication EGL (plusieurs jours consécutifs non publiés).
-    # La borne de fin est first_new_dt : en mode "day", statistics_during_period
-    # retourne les stats dont start >= borne_debut ET start < borne_fin,
-    # ce qui exclut bien le jour first_new_dt lui-même.
+    # Récupérer le sum cumulatif du dernier jour AVANT la première nouvelle entrée.
+    # Fenêtre de 40 jours en arrière pour être robuste aux trous de publication EGL.
+    # La borne de fin est first_new_dt (exclusive en mode "day") : on n'inclut pas
+    # le jour qu'on est en train d'écrire, même s'il existait déjà en base.
     instance = get_instance(hass)
     first_new_dt = datetime.strptime(new_entries[0]["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     prior_stats = await instance.async_add_executor_job(
@@ -192,8 +236,14 @@ async def async_push_new_entries(
     if prior_stats and statistic_id in prior_stats and prior_stats[statistic_id]:
         current_sum = prior_stats[statistic_id][-1].get("sum") or 0.0
         _LOGGER.debug(
-            "EGL: sum cumulatif de référence = %.0f L (avant %s)",
+            "EGL: sum cumulatif de référence = %.0f L (avant le %s)",
             current_sum,
+            new_entries[0]["date"],
+        )
+    else:
+        _LOGGER.warning(
+            "EGL: aucune statistique antérieure trouvée avant le %s — "
+            "le sum repart de 0 (import historique manquant ?)",
             new_entries[0]["date"],
         )
 
@@ -202,5 +252,9 @@ async def async_push_new_entries(
     async_add_external_statistics(hass, metadata, stats)
 
     new_last_date = new_entries[-1]["date"]
-    _LOGGER.debug("EGL: push incrémental OK, nouvelle dernière date : %s", new_last_date)
+    _LOGGER.info(
+        "EGL: push incrémental OK — nouvelle dernière date : %s (sum cumulatif : %.0f L)",
+        new_last_date,
+        stats[-1].sum,
+    )
     return new_last_date
