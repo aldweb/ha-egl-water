@@ -64,7 +64,18 @@ def _entries_to_stats(entries: list[dict], initial_sum: float = 0.0) -> tuple[li
 
 
 def _statistic_id(sensor_unique_id: str) -> str:
-    return f"{DOMAIN}:{sensor_unique_id.lower().replace('-', '_')}"
+    """Construit un statistic_id valide pour HA.
+
+    Format imposé par HA : ``domain:object_id``
+    où object_id ne contient que [a-z0-9_] (pas de tirets, accents, majuscules…).
+    """
+    import re
+    slug = sensor_unique_id.lower()
+    # Remplacer tout caractère non alphanumérique par un underscore
+    slug = re.sub(r"[^a-z0-9]+", "_", slug)
+    # Supprimer les underscores en début/fin et les doublons
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return f"{DOMAIN}:{slug}"
 
 
 # ---------------------------------------------------------------------------

@@ -57,11 +57,17 @@ class EGLDataCoordinator(DataUpdateCoordinator):
         self._entry = entry
         self._client = client
         self._contract_token = contract_token
-        # Slug dérivé du nom d'utilisateur (cohérent avec le statistic_id)
+        # Slug dérivé du nom d'utilisateur — ne doit contenir que [a-z0-9_]
+        # pour satisfaire la validation HA du statistic_id.
+        import re
         raw = entry.data["username"].lower()
         local_part = raw.split("@")[0] if "@" in raw else raw
-        username_slug = local_part.replace(".", "_").replace("-", "_")
-        self._sensor_unique_id = f"{username_slug}_daily"
+        slug = re.sub(r"[^a-z0-9]+", "_", local_part)
+        slug = re.sub(r"_+", "_", slug).strip("_")
+        # Fallback si le slug est vide (caractères non-ASCII uniquement)
+        if not slug:
+            slug = re.sub(r"[^a-z0-9]+", "_", entry.entry_id.lower()).strip("_")
+        self._sensor_unique_id = f"{slug}_daily"
         self._unsub_timers: list[Any] = []
 
     # ------------------------------------------------------------------
