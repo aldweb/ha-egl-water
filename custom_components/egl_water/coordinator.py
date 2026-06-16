@@ -67,6 +67,9 @@ class EGLDataCoordinator(DataUpdateCoordinator):
         # Fallback si le slug est vide (caractères non-ASCII uniquement)
         if not slug:
             slug = re.sub(r"[^a-z0-9]+", "_", entry.entry_id.lower()).strip("_")
+        # HA exige que chaque partie du statistic_id commence par [a-z_], pas un chiffre
+        if not slug or not slug[0].isalpha():
+            slug = f"u{slug}".strip("_")
         self._sensor_unique_id = f"{slug}_daily"
         self._unsub_timers: list[Any] = []
 
