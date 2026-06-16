@@ -27,7 +27,6 @@ from homeassistant.components.recorder.statistics import (
 )
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
-from homeassistant.util.unit_conversion import VolumeConverter
 
 from .api import EGLApiError, EGLClient
 from .const import CHUNK_DAYS, DOMAIN, HISTORY_YEARS
@@ -40,10 +39,9 @@ def _build_metadata(statistic_id: str) -> StatisticMetaData:
         has_mean=False,
         has_sum=True,
         mean_type=StatisticMeanType.NONE,
-        name="Consommation journalière eau",
+        name="Consommation eau",
         source=DOMAIN,
         statistic_id=statistic_id,
-        unit_class=VolumeConverter.UNIT_CLASS,
         unit_of_measurement=UnitOfVolume.LITERS,
     )
 
@@ -66,15 +64,18 @@ def _entries_to_stats(entries: list[dict], initial_sum: float = 0.0) -> tuple[li
 def _statistic_id(sensor_unique_id: str) -> str:
     """Construit un statistic_id valide pour HA.
 
-    Format imposé par HA : ``domain:object_id``
-    où object_id ne contient que [a-z0-9_] (pas de tirets, accents, majuscules…).
+    Format imposé : ``domain:object_id``
+    Règles HA : chaque partie ne contient que [a-z0-9_] ET commence par [a-z0-9].
     """
     import re
     slug = sensor_unique_id.lower()
-    # Remplacer tout caractère non alphanumérique par un underscore
+    # Remplacer tout caractère non alphanumérique par underscore
     slug = re.sub(r"[^a-z0-9]+", "_", slug)
     # Supprimer les underscores en début/fin et les doublons
     slug = re.sub(r"_+", "_", slug).strip("_")
+    # S'assurer que le slug commence par [a-z0-9] (pas _)
+    if not slug or not slug[0].isalnum():
+        slug = f"u{slug}".strip("_")
     return f"{DOMAIN}:{slug}"
 
 
