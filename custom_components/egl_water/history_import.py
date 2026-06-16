@@ -24,7 +24,6 @@ from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     clear_statistics,
     get_instance,
-    list_statistic_ids,
     statistics_during_period,
 )
 from homeassistant.const import UnitOfVolume
@@ -78,15 +77,10 @@ async def async_clear_history(hass: HomeAssistant, sensor_unique_id: str) -> Non
     statistic_id = _statistic_id(sensor_unique_id)
     instance = get_instance(hass)
 
-    # Vérifier que la série existe avant de purger
-    existing = await instance.async_add_executor_job(
-        list_statistic_ids, hass, {statistic_id}, "day"
-    )
-    if existing:
-        await instance.async_add_executor_job(clear_statistics, instance, [statistic_id])
-        _LOGGER.info("EGL: statistiques purgées pour %s", statistic_id)
-    else:
-        _LOGGER.debug("EGL: aucune statistique existante à purger pour %s", statistic_id)
+    # clear_statistics est silencieux si la série n'existe pas :
+    # pas besoin de vérifier l'existence préalablement.
+    await instance.async_add_executor_job(clear_statistics, instance, [statistic_id])
+    _LOGGER.info("EGL: statistiques purgées pour %s", statistic_id)
 
 
 # ---------------------------------------------------------------------------
