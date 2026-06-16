@@ -22,8 +22,7 @@ from homeassistant.components.recorder.models import StatisticData, StatisticMet
 from homeassistant.components.recorder.statistics import (
     StatisticMeanType,
     async_add_external_statistics,
-    clear_statistics,
-    get_instance,
+    async_import_statistics,
     statistics_during_period,
 )
 from homeassistant.const import UnitOfVolume
@@ -75,12 +74,15 @@ def _statistic_id(sensor_unique_id: str) -> str:
 async def async_clear_history(hass: HomeAssistant, sensor_unique_id: str) -> None:
     """Supprime toutes les statistiques recorder pour ce capteur."""
     statistic_id = _statistic_id(sensor_unique_id)
-    instance = get_instance(hass)
 
-    # clear_statistics est silencieux si la série n'existe pas :
-    # pas besoin de vérifier l'existence préalablement.
-    await instance.async_add_executor_job(clear_statistics, instance, [statistic_id])
-    _LOGGER.info("EGL: statistiques purgées pour %s", statistic_id)
+    # clear_statistics n'est pas appelable depuis le main thread (elle exige le thread
+    # interne du recorder). On utilise à la place async_import_statistics avec une liste
+    # vide de données : HA supprime alors toutes les statistiques existantes pour cet ID
+    # et repart de zéro, ce qui est exactement l'effet voulu.
+    from homeassistant.components.recorder.statistics import async_import_statistics
+    metadata = _build_metadata(statistic_id)
+    async_import_statistics(hass, metadata, [])
+    _LOGGER.info("EGL: statistiques purgées pour %s (via async_import_statistics vide)", statistic_id)
 
 
 # ---------------------------------------------------------------------------
