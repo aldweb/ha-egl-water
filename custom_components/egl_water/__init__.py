@@ -18,7 +18,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import EGLDataCoordinator
-from .history_import import async_clear_history, async_import_history
+from .history_import import async_import_history
 
 _LOGGER = logging.getLogger(__name__)
 
