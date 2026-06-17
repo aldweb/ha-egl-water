@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -12,19 +13,27 @@ from homeassistant.core import HomeAssistant, callback
 from .api import EGLAuthError, EGLClient
 from .const import (
     CONF_PASSWORD,
-    CONF_UPDATE_HOUR_1,
-    CONF_UPDATE_HOUR_2,
-    CONF_UPDATE_MINUTE_1,
-    CONF_UPDATE_MINUTE_2,
+    CONF_UPDATE_TIME_1,
+    CONF_UPDATE_TIME_2,
     CONF_USERNAME,
-    DEFAULT_UPDATE_HOUR_1,
-    DEFAULT_UPDATE_HOUR_2,
-    DEFAULT_UPDATE_MINUTE_1,
-    DEFAULT_UPDATE_MINUTE_2,
+    DEFAULT_UPDATE_TIME_1,
+    DEFAULT_UPDATE_TIME_2,
     DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_RE_HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+
+
+def _validate_hhmm(value: str) -> str:
+    """Valide et normalise une heure au format HH:MM."""
+    value = value.strip()
+    if not _RE_HHMM.match(value):
+        raise vol.Invalid("Format invalide, attendu HH:MM (ex : 08:00)")
+    h, m = value.split(":")
+    return f"{int(h):02d}:{m}"
+
 
 STEP_USER_SCHEMA = vol.Schema({
     vol.Required(CONF_USERNAME): str,
@@ -91,40 +100,36 @@ class EGLOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         opts = self._config_entry.options
+        errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Validation : les deux horaires doivent être différents
-            t1 = (user_input[CONF_UPDATE_HOUR_1], user_input[CONF_UPDATE_MINUTE_1])
-            t2 = (user_input[CONF_UPDATE_HOUR_2], user_input[CONF_UPDATE_MINUTE_2])
-            if t1 == t2:
-                return self.async_show_form(
-                    step_id="init",
-                    data_schema=self._build_schema(user_input),
-                    errors={"base": "same_times"},
-                )
-            return self.async_create_entry(title="", data=user_input)
+            try:
+                t1 = _validate_hhmm(user_input[CONF_UPDATE_TIME_1])
+                t2 = _validate_hhmm(user_input[CONF_UPDATE_TIME_2])
+            except vol.Invalid:
+                errors["base"] = "invalid_time_format"
+            else:
+                if t1 == t2:
+                    errors["base"] = "same_times"
+                else:
+                    return self.async_create_entry(
+                        title="",
+                        data={CONF_UPDATE_TIME_1: t1, CONF_UPDATE_TIME_2: t2},
+                    )
+
+        schema = vol.Schema({
+            vol.Required(
+                CONF_UPDATE_TIME_1,
+                default=opts.get(CONF_UPDATE_TIME_1, DEFAULT_UPDATE_TIME_1),
+            ): str,
+            vol.Required(
+                CONF_UPDATE_TIME_2,
+                default=opts.get(CONF_UPDATE_TIME_2, DEFAULT_UPDATE_TIME_2),
+            ): str,
+        })
 
         return self.async_show_form(
             step_id="init",
-            data_schema=self._build_schema(opts),
+            data_schema=schema,
+            errors=errors,
         )
-
-    def _build_schema(self, values: dict) -> vol.Schema:
-        return vol.Schema({
-            vol.Required(
-                CONF_UPDATE_HOUR_1,
-                default=values.get(CONF_UPDATE_HOUR_1, DEFAULT_UPDATE_HOUR_1),
-            ): vol.All(int, vol.Range(min=0, max=23)),
-            vol.Required(
-                CONF_UPDATE_MINUTE_1,
-                default=values.get(CONF_UPDATE_MINUTE_1, DEFAULT_UPDATE_MINUTE_1),
-            ): vol.All(int, vol.Range(min=0, max=59)),
-            vol.Required(
-                CONF_UPDATE_HOUR_2,
-                default=values.get(CONF_UPDATE_HOUR_2, DEFAULT_UPDATE_HOUR_2),
-            ): vol.All(int, vol.Range(min=0, max=23)),
-            vol.Required(
-                CONF_UPDATE_MINUTE_2,
-                default=values.get(CONF_UPDATE_MINUTE_2, DEFAULT_UPDATE_MINUTE_2),
-            ): vol.All(int, vol.Range(min=0, max=59)),
-        })

@@ -22,31 +22,51 @@ CONF_CONTRACT_TOKEN = "contract_token"
 CONF_HISTORY_IMPORTED = "history_imported"   # flag import initial effectué
 CONF_LAST_KNOWN_DATE = "last_known_date"     # dernière date importée (YYYY-MM-DD)
 
-# Options flow keys
-CONF_UPDATE_HOUR_1 = "update_hour_1"
-CONF_UPDATE_MINUTE_1 = "update_minute_1"
-CONF_UPDATE_HOUR_2 = "update_hour_2"
-CONF_UPDATE_MINUTE_2 = "update_minute_2"
+# Options flow keys — heure locale au format "HH:MM"
+CONF_UPDATE_TIME_1 = "update_time_1"
+CONF_UPDATE_TIME_2 = "update_time_2"
 
-# Scheduling — valeurs par défaut (heures UTC)
-# 06:00 UTC = 08:00 CEST  /  14:00 UTC = 16:00 CEST
-DEFAULT_UPDATE_HOUR_1 = 6
-DEFAULT_UPDATE_MINUTE_1 = 0
-DEFAULT_UPDATE_HOUR_2 = 14
-DEFAULT_UPDATE_MINUTE_2 = 0
+# Valeurs par défaut en heure locale
+# 08:00 CEST = 06:00 UTC  /  16:00 CEST = 14:00 UTC
+DEFAULT_UPDATE_TIME_1 = "08:00"
+DEFAULT_UPDATE_TIME_2 = "16:00"
 
-def get_update_times(options: dict) -> list[tuple[int, int]]:
-    """Retourne les horaires UTC configurés (ou les valeurs par défaut)."""
-    return [
-        (
-            options.get(CONF_UPDATE_HOUR_1, DEFAULT_UPDATE_HOUR_1),
-            options.get(CONF_UPDATE_MINUTE_1, DEFAULT_UPDATE_MINUTE_1),
-        ),
-        (
-            options.get(CONF_UPDATE_HOUR_2, DEFAULT_UPDATE_HOUR_2),
-            options.get(CONF_UPDATE_MINUTE_2, DEFAULT_UPDATE_MINUTE_2),
-        ),
-    ]
+
+def get_update_times(hass, options: dict) -> list[tuple[int, int]]:
+    """Convertit les horaires locaux (HH:MM) en tuples (heure, minute) UTC.
+
+    Utilise le fuseau horaire configuré dans Home Assistant.
+    """
+    import re
+    from datetime import datetime, timezone
+
+    tz = hass.config.time_zone  # ex: "Europe/Paris"
+    try:
+        import zoneinfo
+        local_tz = zoneinfo.ZoneInfo(tz)
+    except Exception:
+        # Fallback : on renvoie les heures telles quelles (supposées UTC)
+        local_tz = timezone.utc
+
+    result = []
+    for key, default in (
+        (CONF_UPDATE_TIME_1, DEFAULT_UPDATE_TIME_1),
+        (CONF_UPDATE_TIME_2, DEFAULT_UPDATE_TIME_2),
+    ):
+        raw = options.get(key, default)
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", raw.strip())
+        if not m:
+            raw = default
+            m = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
+        local_h, local_min = int(m.group(1)), int(m.group(2))
+
+        # Construire un datetime local fictif (date fixe) pour extraire l'offset
+        ref = datetime(2000, 1, 1, local_h, local_min, tzinfo=local_tz)
+        utc_ref = ref.astimezone(timezone.utc)
+        result.append((utc_ref.hour, utc_ref.minute))
+
+    return result
+
 
 # Import historique
 HISTORY_YEARS = 2       # profondeur à importer au premier démarrage
