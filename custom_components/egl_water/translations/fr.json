@@ -17,23 +17,5 @@
     "abort": {
       "already_configured": "Ce compte est déjà configuré."
     }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Options Eau du Grand Lyon",
-        "description": "Configurez les horaires de téléchargement des données (heures UTC).",
-        "data": {
-          "update_hour_1": "Première mise à jour quotidienne",
-          "update_hour_2": "Deuxième mise à jour quotidienne",
-          "reimport_history": "Purger et réimporter tout l'historique (2 ans)"
-        },
-        "data_description": {
-          "update_hour_1": "Heure UTC du premier téléchargement journalier. EGL publie généralement les données en milieu de matinée.",
-          "update_hour_2": "Heure UTC du second téléchargement journalier, pour rattraper les publications tardives.",
-          "reimport_history": "⚠️ Supprime toutes les statistiques existantes et retélécharge les 2 dernières années depuis EGL. À n'utiliser qu'en cas de données corrompues ou manquantes."
-        }
-      }
-    }
   }
 }
