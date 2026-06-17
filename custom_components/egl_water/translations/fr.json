@@ -17,5 +17,22 @@
     "abort": {
       "already_configured": "Ce compte est déjà configuré."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Horaires de téléchargement",
+        "description": "Définissez les deux horaires journaliers de récupération des données (heures UTC). Par défaut : 06:00 et 14:00 UTC (= 08:00 et 16:00 en heure de Paris l'été).",
+        "data": {
+          "update_hour_1": "1er passage — heure (0–23, UTC)",
+          "update_minute_1": "1er passage — minute (0–59)",
+          "update_hour_2": "2e passage — heure (0–23, UTC)",
+          "update_minute_2": "2e passage — minute (0–59)"
+        }
+      }
+    },
+    "error": {
+      "same_times": "Les deux horaires doivent être différents."
+    }
   }
 }
