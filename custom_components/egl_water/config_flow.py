@@ -6,11 +6,23 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.core import HomeAssistant, callback
 
 from .api import EGLAuthError, EGLClient
-from .const import CONF_PASSWORD, CONF_USERNAME, DOMAIN
+from .const import (
+    CONF_PASSWORD,
+    CONF_UPDATE_HOUR_1,
+    CONF_UPDATE_HOUR_2,
+    CONF_UPDATE_MINUTE_1,
+    CONF_UPDATE_MINUTE_2,
+    CONF_USERNAME,
+    DEFAULT_UPDATE_HOUR_1,
+    DEFAULT_UPDATE_HOUR_2,
+    DEFAULT_UPDATE_MINUTE_1,
+    DEFAULT_UPDATE_MINUTE_2,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,3 +74,57 @@ class EGLConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=STEP_USER_SCHEMA,
             errors=errors,
         )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return EGLOptionsFlow(config_entry)
+
+
+class EGLOptionsFlow(OptionsFlow):
+    """Permet de modifier les horaires de téléchargement."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        self._config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        opts = self._config_entry.options
+
+        if user_input is not None:
+            # Validation : les deux horaires doivent être différents
+            t1 = (user_input[CONF_UPDATE_HOUR_1], user_input[CONF_UPDATE_MINUTE_1])
+            t2 = (user_input[CONF_UPDATE_HOUR_2], user_input[CONF_UPDATE_MINUTE_2])
+            if t1 == t2:
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=self._build_schema(user_input),
+                    errors={"base": "same_times"},
+                )
+            return self.async_create_entry(title="", data=user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self._build_schema(opts),
+        )
+
+    def _build_schema(self, values: dict) -> vol.Schema:
+        return vol.Schema({
+            vol.Required(
+                CONF_UPDATE_HOUR_1,
+                default=values.get(CONF_UPDATE_HOUR_1, DEFAULT_UPDATE_HOUR_1),
+            ): vol.All(int, vol.Range(min=0, max=23)),
+            vol.Required(
+                CONF_UPDATE_MINUTE_1,
+                default=values.get(CONF_UPDATE_MINUTE_1, DEFAULT_UPDATE_MINUTE_1),
+            ): vol.All(int, vol.Range(min=0, max=59)),
+            vol.Required(
+                CONF_UPDATE_HOUR_2,
+                default=values.get(CONF_UPDATE_HOUR_2, DEFAULT_UPDATE_HOUR_2),
+            ): vol.All(int, vol.Range(min=0, max=23)),
+            vol.Required(
+                CONF_UPDATE_MINUTE_2,
+                default=values.get(CONF_UPDATE_MINUTE_2, DEFAULT_UPDATE_MINUTE_2),
+            ): vol.All(int, vol.Range(min=0, max=59)),
+        })

@@ -35,6 +35,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Recharger le planning si les options (horaires) sont modifiées
+    entry.async_on_unload(entry.add_update_listener(_async_update_options))
+
+
     # Import historique initial : une seule fois, en tâche de fond
     if not entry.data.get(CONF_HISTORY_IMPORTED, False):
         hass.async_create_task(
@@ -42,6 +46,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     return True
+
+
+async def _async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Appelé quand l'utilisateur modifie les options : replanifie les horaires."""
+    coordinator: EGLDataCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator.async_stop_schedule()
+    coordinator.async_start_schedule()
+    _LOGGER.debug("EGL: horaires mis à jour depuis les options")
 
 
 async def _async_run_history_import(

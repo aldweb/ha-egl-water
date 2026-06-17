@@ -33,7 +33,7 @@ from .const import (
     DOMAIN,
     FETCH_MONTHLY_DAYS,
     FETCH_OVERLAP_DAYS,
-    UPDATE_TIMES_UTC,
+    get_update_times,
 )
 from .history_import import async_push_new_entries
 
@@ -66,7 +66,7 @@ class EGLDataCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
 
     def async_start_schedule(self) -> None:
-        for hour, minute in UPDATE_TIMES_UTC:
+        for hour, minute in get_update_times(self._entry.options):
             unsub = async_track_time_change(
                 self.hass, self._async_scheduled_refresh,
                 hour=hour, minute=minute, second=0,
