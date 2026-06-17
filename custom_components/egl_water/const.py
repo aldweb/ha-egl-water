@@ -22,18 +22,9 @@ CONF_CONTRACT_TOKEN = "contract_token"
 CONF_HISTORY_IMPORTED = "history_imported"   # flag import initial effectué
 CONF_LAST_KNOWN_DATE = "last_known_date"     # dernière date importée (YYYY-MM-DD)
 
-# Options flow keys
-CONF_UPDATE_HOUR_1 = "update_hour_1"
-CONF_UPDATE_HOUR_2 = "update_hour_2"
-CONF_REIMPORT = "reimport_history"
-
-# Scheduling — heures UTC disponibles (de 0h à 23h)
-AVAILABLE_HOURS_UTC = list(range(24))
-
-# Valeurs par défaut des horaires
+# Scheduling — deux passages fixes par jour (heures UTC)
 # 06:00 UTC = 08:00 CEST  /  14:00 UTC = 16:00 CEST
-DEFAULT_UPDATE_HOUR_1 = 6
-DEFAULT_UPDATE_HOUR_2 = 14
+UPDATE_TIMES_UTC = [(6, 0), (14, 0)]
 
 # Import historique
 HISTORY_YEARS = 2       # profondeur à importer au premier démarrage

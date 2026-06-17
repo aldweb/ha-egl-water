@@ -8,15 +8,6 @@ Flux d'authentification OAuth2 PKCE maison :
   5. GET  /auth/authorize-internet?...code_challenge... → reçoit un code OAuth2
   6. POST /auth/tokenUtilisateurInternet   → échange le code contre un Bearer JWT
   7. GET  /produits/contrats/{token}/consommationsJournalieres → données
-
-Note sur la gestion de session :
-  Chaque authentification crée une SESSION FRAÎCHE (nouveau CookieJar) puis la
-  ferme dès que le Bearer token est obtenu. On ne conserve entre les refreshs
-  QUE le Bearer token ; les cookies de session EGL ne sont jamais réutilisés.
-  Ceci évite le rejet "invalid_grant" (code OAuth2 déjà consommé) et le
-  "nombre maximum de connexion atteint" (sessions zombies côté serveur).
-  La session de données (appels fetch) est également recréée à chaque appel
-  pour éviter les "Unclosed client session" de runner.py.
 """
 from __future__ import annotations
 
@@ -53,8 +44,10 @@ COMMON_HEADERS = {
 
 def _generate_pkce() -> tuple[str, str]:
     """Génère un code_verifier et son code_challenge S256."""
+    # code_verifier : 32 octets aléatoires en base64url
     verifier_bytes = os.urandom(32)
     code_verifier = base64.urlsafe_b64encode(verifier_bytes).rstrip(b"=").decode()
+    # code_challenge = BASE64URL(SHA256(verifier))
     digest = hashlib.sha256(code_verifier.encode()).digest()
     code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     return code_verifier, code_challenge
@@ -77,49 +70,33 @@ class EGLClient:
         self._bearer_token: str | None = None
         self._token_expiry: datetime | None = None
         self._contract_token: str | None = None
+        self._session: aiohttp.ClientSession | None = None
 
     # ------------------------------------------------------------------
-    # Session helpers — une session éphémère par opération
+    # Session management
     # ------------------------------------------------------------------
 
-    def _new_session(self) -> aiohttp.ClientSession:
-        """Crée une session aiohttp avec CookieJar frais."""
-        return aiohttp.ClientSession(
-            cookie_jar=aiohttp.CookieJar(),
-            headers=COMMON_HEADERS,
-        )
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            # cookie_jar conserve les cookies de session entre requêtes
+            self._session = aiohttp.ClientSession(
+                cookie_jar=aiohttp.CookieJar(),
+                headers=COMMON_HEADERS,
+            )
+        return self._session
 
     async def close(self) -> None:
-        """Pas de session persistante à fermer — méthode conservée pour compatibilité."""
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     # ------------------------------------------------------------------
     # Authentification complète
     # ------------------------------------------------------------------
 
     async def authenticate(self) -> str:
-        """Effectue le flux complet et retourne le Bearer token.
+        """Effectue le flux complet et retourne le Bearer token."""
+        session = await self._get_session()
 
-        La session HTTP est créée, utilisée, puis fermée dans cette méthode.
-        Aucun cookie ne persiste après l'obtention du token.
-        """
-        session = self._new_session()
-        try:
-            token, expires_in = await self._do_auth_flow(session)
-        finally:
-            # On ferme TOUJOURS la session, même en cas d'exception,
-            # pour ne laisser aucune connexion ouverte côté serveur EGL.
-            await session.close()
-
-        self._bearer_token = token
-        self._token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in - 60)
-        _LOGGER.info("EGL: authentification OK, token valide %ds", expires_in)
-        return token
-
-    async def _do_auth_flow(self, session: aiohttp.ClientSession) -> tuple[str, int]:
-        """Effectue les 6 étapes OAuth2 dans la session fournie.
-
-        Retourne (access_token, expires_in).
-        """
         # Étape 1 : login → cookie de session
         _LOGGER.debug("EGL auth step 1: login")
         login_data = urlencode({
@@ -156,7 +133,7 @@ class EGLClient:
         # Étape 4 : GET roles (confirmation)
         _LOGGER.debug("EGL auth step 4: confirm roles")
         async with session.get(ROLES_URL) as resp:
-            pass  # contenu non utilisé
+            pass  # on n'a pas besoin du contenu
 
         # Étape 5 : authorize → code OAuth2
         _LOGGER.debug("EGL auth step 5: authorize")
@@ -168,21 +145,22 @@ class EGLClient:
             "code_challenge_method": "S256",
             "client_id": CLIENT_ID,
         }
-
-        oauth_code = None
-
-        # Tentative 1 : sans suivi de redirection (302 → Location: callback?code=...)
+        # On suit manuellement la redirection pour extraire le code
         async with session.get(
             AUTHORIZE_URL,
             params=auth_params,
             allow_redirects=False,
         ) as resp:
+            # Le serveur peut répondre 302 vers redirect_uri?code=...
+            # ou 200 avec le code dans le body / header Location
             location = resp.headers.get("Location", "")
+            oauth_code = None
             if location:
                 parsed = urlparse(location)
                 oauth_code = parse_qs(parsed.query).get("code", [None])[0]
             if not oauth_code and resp.status == 200:
                 body = await resp.text()
+                # Cherche un JSON {"code": "..."} ou ?code= dans le body
                 m = re.search(r'"code"\s*:\s*"([^"]+)"', body)
                 if m:
                     oauth_code = m.group(1)
@@ -191,8 +169,9 @@ class EGLClient:
                     if m:
                         oauth_code = m.group(1)
 
-        # Tentative 2 : avec suivi de redirection
         if not oauth_code:
+            # Certains serveurs retournent directement 200 avec le code
+            # en suivant la redirection (callback.html?code=…)
             async with session.get(
                 AUTHORIZE_URL,
                 params=auth_params,
@@ -210,7 +189,7 @@ class EGLClient:
         if not oauth_code:
             raise EGLAuthError("Impossible d'obtenir le code OAuth2")
 
-        _LOGGER.debug("EGL auth step 5: code obtenu (%s…)", oauth_code[:8])
+        _LOGGER.debug("EGL auth step 5: got code %s…", oauth_code[:8])
 
         # Étape 6 : échange code → Bearer token
         _LOGGER.debug("EGL auth step 6: exchange code for token")
@@ -237,7 +216,10 @@ class EGLClient:
             raise EGLAuthError(f"Pas de token dans la réponse : {payload}")
 
         expires_in = payload.get("expires_in", 3600)
-        return token, expires_in
+        self._bearer_token = token
+        self._token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in - 60)
+        _LOGGER.info("EGL: token obtenu, expire dans %ds", expires_in)
+        return token
 
     async def _get_valid_token(self) -> str:
         """Retourne un token valide, ré-authentifie si nécessaire."""
@@ -259,24 +241,24 @@ class EGLClient:
             return self._contract_token
 
         token = await self._get_valid_token()
+        session = await self._get_session()
         url = f"{BASE_URL}/rest/produits/contrats"
+        async with session.get(
+            url,
+            headers={"authorization": f"Bearer {token}"},
+        ) as resp:
+            if resp.status != 200:
+                raise EGLApiError(f"Impossible de récupérer les contrats ({resp.status})")
+            data = await resp.json()
 
-        session = self._new_session()
-        try:
-            async with session.get(
-                url,
-                headers={**COMMON_HEADERS, "authorization": f"Bearer {token}"},
-            ) as resp:
-                if resp.status != 200:
-                    raise EGLApiError(f"Impossible de récupérer les contrats ({resp.status})")
-                data = await resp.json()
-        finally:
-            await session.close()
-
+        # La réponse est une liste de contrats ; on prend le premier
+        # Chaque contrat a un champ "id" ou "refContrat" qui sert de token dans l'URL
         contracts = data if isinstance(data, list) else data.get("contrats", [])
         if not contracts:
             raise EGLApiError("Aucun contrat trouvé pour ce compte")
 
+        # L'URL observée utilise un token opaque (ex: 8GYAWlhGtDHS.hhF9…)
+        # Il est généralement dans le champ "id", "token" ou "refContrat"
         first = contracts[0]
         contract_token = (
             first.get("id")
@@ -301,6 +283,7 @@ class EGLClient:
         Chaque entrée : {"date": "YYYY-MM-DD", "liters": float}
         """
         token = await self._get_valid_token()
+        session = await self._get_session()
 
         date_fmt = "%Y-%m-%dT%H:%M:%S.000Z"
         url = (
@@ -311,43 +294,26 @@ class EGLClient:
             "dateDebut": start.strftime(date_fmt),
             "dateFin": end.strftime(date_fmt),
         }
-
-        session = self._new_session()
-        try:
-            async with session.get(
-                url,
-                params=params,
-                headers={**COMMON_HEADERS, "authorization": f"Bearer {token}"},
-            ) as resp:
-                if resp.status == 401:
-                    # Token expiré entre-temps : invalider et ré-authentifier une fois
-                    _LOGGER.warning("EGL: token expiré pendant le fetch, ré-authentification")
-                    self._bearer_token = None
-                    self._token_expiry = None
-
-                if resp.status == 401:
-                    # On doit rouvrir une nouvelle requête avec le nouveau token
-                    token = await self._get_valid_token()
-                else:
-                    data = await resp.json()
-
+        async with session.get(
+            url,
+            params=params,
+            headers={"authorization": f"Bearer {token}"},
+        ) as resp:
             if resp.status == 401:
+                # Token expiré entre-temps : on ré-authentifie une fois
+                _LOGGER.warning("EGL: token expiré, ré-authentification")
+                self._bearer_token = None
+                token = await self._get_valid_token()
+                resp.close()
                 async with session.get(
                     url,
                     params=params,
-                    headers={**COMMON_HEADERS, "authorization": f"Bearer {token}"},
+                    headers={"authorization": f"Bearer {token}"},
                 ) as resp2:
-                    if resp2.status != 200:
-                        raise EGLApiError(f"Fetch consommations échoué ({resp2.status})")
                     data = await resp2.json()
-        finally:
-            await session.close()
+            else:
+                data = await resp.json()
 
-        _LOGGER.debug(
-            "EGL: fetch %s → %s OK",
-            start.strftime("%Y-%m-%d"),
-            end.strftime("%Y-%m-%d"),
-        )
         return _parse_consumption(data)
 
 
@@ -359,6 +325,7 @@ def _parse_consumption(data: dict | list) -> list[dict]:
         "unites": { "consommation": "m3" | "l" } }
     """
     if isinstance(data, list):
+        # Certaines versions retournent directement une liste
         raw_list = data
         unit = "l"
     else:
@@ -371,10 +338,15 @@ def _parse_consumption(data: dict | list) -> list[dict]:
     results = []
     for entry in raw_list:
         conso = entry.get("consommation", 0) or 0
+        # Convertir en litres
         liters = float(conso) * 1000 if unit == "m3" else float(conso)
         annee = entry.get("annee", 0)
-        mois = entry.get("mois", 0)
+        mois = entry.get("mois", 0)  # 0-based dans l'API EFluid, à vérifier
         jour = entry.get("jour", 1)
+        # Certaines API utilisent mois 0-based (ancien EFluid), d'autres 1-based
+        # On normalise : si mois == 0 pour janvier c'est 0-based
+        # La nouvelle API agence.eaudugrandlyon.com n'est pas encore connue ;
+        # on garde le comportement du konnector EGL (mois +1)
         month = mois + 1 if mois < 12 else mois
         date_str = f"{annee:04d}-{month:02d}-{jour:02d}"
         results.append({"date": date_str, "liters": liters})
