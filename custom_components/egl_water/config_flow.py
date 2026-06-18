@@ -13,9 +13,11 @@ from homeassistant.core import HomeAssistant, callback
 from .api import EGLAuthError, EGLClient
 from .const import (
     CONF_PASSWORD,
+    CONF_PRICE_PER_M3,
     CONF_UPDATE_TIME_1,
     CONF_UPDATE_TIME_2,
     CONF_USERNAME,
+    DEFAULT_PRICE_PER_M3,
     DEFAULT_UPDATE_TIME_1,
     DEFAULT_UPDATE_TIME_2,
     DOMAIN,
@@ -27,7 +29,6 @@ _RE_HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 
 def _validate_hhmm(value: str) -> str:
-    """Valide et normalise une heure au format HH:MM."""
     value = value.strip()
     if not _RE_HHMM.match(value):
         raise vol.Invalid("Format invalide, attendu HH:MM (ex : 08:00)")
@@ -42,7 +43,6 @@ STEP_USER_SCHEMA = vol.Schema({
 
 
 async def _validate_credentials(hass: HomeAssistant, data: dict) -> dict:
-    """Tente une authentification et récupère le token de contrat."""
     client = EGLClient(data[CONF_USERNAME], data[CONF_PASSWORD])
     try:
         await client.authenticate()
@@ -53,15 +53,12 @@ async def _validate_credentials(hass: HomeAssistant, data: dict) -> dict:
 
 
 class EGLConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Gère le flux de configuration via l'interface HA."""
-
     VERSION = 1
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
-
         if user_input is not None:
             try:
                 extra = await _validate_credentials(self.hass, user_input)
@@ -77,7 +74,6 @@ class EGLConfigFlow(ConfigFlow, domain=DOMAIN):
                     title=f"EGL – {user_input[CONF_USERNAME]}",
                     data={**user_input, **extra},
                 )
-
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_SCHEMA,
@@ -91,7 +87,7 @@ class EGLConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class EGLOptionsFlow(OptionsFlow):
-    """Permet de modifier les horaires de téléchargement."""
+    """Permet de modifier les horaires et le tarif."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._config_entry = config_entry
@@ -114,7 +110,11 @@ class EGLOptionsFlow(OptionsFlow):
                 else:
                     return self.async_create_entry(
                         title="",
-                        data={CONF_UPDATE_TIME_1: t1, CONF_UPDATE_TIME_2: t2},
+                        data={
+                            CONF_UPDATE_TIME_1: t1,
+                            CONF_UPDATE_TIME_2: t2,
+                            CONF_PRICE_PER_M3: user_input[CONF_PRICE_PER_M3],
+                        },
                     )
 
         schema = vol.Schema({
@@ -126,6 +126,10 @@ class EGLOptionsFlow(OptionsFlow):
                 CONF_UPDATE_TIME_2,
                 default=opts.get(CONF_UPDATE_TIME_2, DEFAULT_UPDATE_TIME_2),
             ): str,
+            vol.Required(
+                CONF_PRICE_PER_M3,
+                default=opts.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0.01, max=50.0)),
         })
 
         return self.async_show_form(

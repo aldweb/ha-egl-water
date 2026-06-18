@@ -78,3 +78,7 @@ FETCH_OVERLAP_DAYS = 10
 
 # Pour les cumuls mensuels on remonte 35 jours (couvre le mois entier + marge retard)
 FETCH_MONTHLY_DAYS = 35
+
+# Tarif TTC tout compris en €/m³
+CONF_PRICE_PER_M3 = "price_per_m3"
+DEFAULT_PRICE_PER_M3 = 3.56  # à titre indicatif, à ajuster selon facture

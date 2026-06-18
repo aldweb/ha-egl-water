@@ -7,12 +7,12 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfVolume
+from homeassistant.const import UnitOfVolume, CURRENCY_EURO
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3, DOMAIN
 from .coordinator import EGLDataCoordinator
 
 
@@ -27,6 +27,8 @@ async def async_setup_entry(
         EGLDailySensor(coordinator, entry),
         EGLMonthlySensor(coordinator, entry),
         EGLRolling30dSensor(coordinator, entry),
+        EGLDailyCostSensor(coordinator, entry),
+        EGLMonthlyCostSensor(coordinator, entry),
     ])
 
 
@@ -51,11 +53,17 @@ class _EGLBaseSensor(CoordinatorEntity[EGLDataCoordinator], SensorEntity):
             "model": "Compteur Téléo",
         }
 
+    def _price_per_m3(self) -> float:
+        return self._entry.options.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
+
+    def _liters_to_cost(self, liters: float) -> float:
+        """Convertit des litres en euros (arrondi à 4 décimales)."""
+        return round(liters / 1000 * self._price_per_m3(), 4)
+
 
 class EGLDailySensor(_EGLBaseSensor):
     """Consommation du jour précédent (en litres)."""
 
-    _attr_translation_key = "daily"
     _attr_icon = "mdi:water"
 
     def __init__(self, coordinator: EGLDataCoordinator, entry: ConfigEntry) -> None:
@@ -116,3 +124,61 @@ class EGLRolling30dSensor(_EGLBaseSensor):
         if not data:
             return None
         return data.get("rolling_30d_liters")
+
+
+class _EGLBaseCostSensor(_EGLBaseSensor):
+    """Capteur de base pour les coûts."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = CURRENCY_EURO
+    _attr_icon = "mdi:currency-eur"
+
+
+class EGLDailyCostSensor(_EGLBaseCostSensor):
+    """Coût estimé du jour précédent (en euros TTC)."""
+
+    def __init__(self, coordinator: EGLDataCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_daily_cost"
+        self._attr_name = "Coût journalier"
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        if not data:
+            return None
+        liters = data.get("daily_liters")
+        if liters is None:
+            return None
+        return self._liters_to_cost(liters)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "tarif_euro_par_m3": self._price_per_m3(),
+            "date": (self.coordinator.data or {}).get("daily_date"),
+        }
+
+
+class EGLMonthlyCostSensor(_EGLBaseCostSensor):
+    """Coût estimé du mois en cours (en euros TTC)."""
+
+    def __init__(self, coordinator: EGLDataCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_monthly_cost"
+        self._attr_name = "Coût mensuel"
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        if not data:
+            return None
+        liters = data.get("monthly_liters")
+        if liters is None:
+            return None
+        return self._liters_to_cost(liters)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {"tarif_euro_par_m3": self._price_per_m3()}
