@@ -21,17 +21,17 @@
   "options": {
     "step": {
       "init": {
-        "title": "Horaires de téléchargement",
-        "description": "Définissez les deux horaires journaliers de récupération des données (heures UTC). Par défaut : 06:00 et 14:00 UTC (= 08:00 et 16:00 en heure de Paris l'été).",
+        "title": "Paramètres",
+        "description": "Horaires en heure locale (ex : 08:00 = 08h heure de Paris). Tarif TTC à calculer depuis votre facture : Total TTC ÷ m³ consommés.",
         "data": {
-          "update_hour_1": "1er passage — heure (0–23, UTC)",
-          "update_minute_1": "1er passage — minute (0–59)",
-          "update_hour_2": "2e passage — heure (0–23, UTC)",
-          "update_minute_2": "2e passage — minute (0–59)"
+          "update_time_1": "1er passage (HH:MM)",
+          "update_time_2": "2e passage (HH:MM)",
+          "price_per_m3": "Tarif TTC (€/m³)"
         }
       }
     },
     "error": {
+      "invalid_time_format": "Format invalide. Utilisez HH:MM, par exemple 08:00 ou 16:30.",
       "same_times": "Les deux horaires doivent être différents."
     }
   }
