@@ -27,7 +27,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = EGLClient(entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD])
     contract_token = entry.data[CONF_CONTRACT_TOKEN]
 
-    # On passe entry au coordinator pour qu'il puisse persister last_known_date
     coordinator = EGLDataCoordinator(hass, entry, client, contract_token)
     await coordinator.async_config_entry_first_refresh()
     coordinator.async_start_schedule()
@@ -38,13 +37,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Recharger le planning si les options (horaires) sont modifiées
     entry.async_on_unload(entry.add_update_listener(_async_update_options))
 
-
-    # Import historique initial : une seule fois, en tâche de fond
+    # Import historique initial : une seule fois, en tâche de fond,
+    # avec son propre client pour ne pas interférer avec le coordinator.
     if not entry.data.get(CONF_HISTORY_IMPORTED, False):
+        _LOGGER.info("EGL: lancement de l'import historique en tâche de fond")
         hass.async_create_task(
-            _async_run_history_import(hass, entry, client, contract_token, coordinator)
+            _async_run_history_import(hass, entry, contract_token, coordinator)
         )
-
     return True
 
 
@@ -59,29 +58,31 @@ async def _async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None
 async def _async_run_history_import(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    client: EGLClient,
     contract_token: str,
     coordinator: "EGLDataCoordinator",
 ) -> None:
-    """Import initial en tâche de fond. Pose le flag et mémorise la dernière date."""
+    """Import initial en tâche de fond. Pose le flag et mémorise la dernière date.
+
+    Utilise sa propre instance EGLClient pour ne pas interférer avec le coordinator.
+    """
     sensor_unique_id = coordinator._sensor_unique_id
+    import_client = EGLClient(entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD])
     try:
+        await import_client.authenticate()
         count, last_date = await async_import_history(
-            hass, client, contract_token, sensor_unique_id
+            hass, import_client, contract_token, sensor_unique_id
         )
         _LOGGER.info("EGL: %d jours d'historique importés (dernier : %s)", count, last_date)
     except Exception as err:  # noqa: BLE001
         _LOGGER.error("EGL: échec de l'import historique : %s", err)
         return  # flag non posé → nouvel essai au prochain démarrage
+    finally:
+        await import_client.close()
 
     # Marquer l'import comme effectué et mémoriser la dernière date connue
-    new_data = {
-        **entry.data,
-        CONF_HISTORY_IMPORTED: True,
-    }
+    new_data = {**entry.data, CONF_HISTORY_IMPORTED: True}
     if last_date:
         new_data[CONF_LAST_KNOWN_DATE] = last_date
-
     hass.config_entries.async_update_entry(entry, data=new_data)
 
 
