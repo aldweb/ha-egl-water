@@ -5,8 +5,9 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 
-from .api import EGLClient
+from .api import EGLAuthError, EGLClient
 from .const import (
     CONF_CONTRACT_TOKEN,
     CONF_HISTORY_IMPORTED,
@@ -28,13 +29,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     contract_token = entry.data[CONF_CONTRACT_TOKEN]
 
     coordinator = EGLDataCoordinator(hass, entry, client, contract_token)
-    await coordinator.async_config_entry_first_refresh()
+
+    # Premier refresh : on tente, mais une erreur API transitoire ne doit pas
+    # bloquer le setup — notamment l'import historique qui suit.
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        _LOGGER.warning(
+            "EGL: premier refresh échoué (API indisponible ?). "
+            "L'intégration sera retentée, mais l'import historique est lancé quand même."
+        )
+        # On ne lève pas : on continue pour au moins lancer l'import.
+
     coordinator.async_start_schedule()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Recharger le planning si les options (horaires) sont modifiées
     entry.async_on_unload(entry.add_update_listener(_async_update_options))
 
     # Import historique initial : une seule fois, en tâche de fond,
@@ -42,8 +53,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not entry.data.get(CONF_HISTORY_IMPORTED, False):
         _LOGGER.info("EGL: lancement de l'import historique en tâche de fond")
         hass.async_create_task(
-            _async_run_history_import(hass, entry, contract_token, coordinator)
+            _async_run_history_import(hass, entry, contract_token, coordinator),
+            name="egl_water_history_import",
         )
+    else:
+        _LOGGER.debug("EGL: import historique déjà effectué, ignoré")
+
     return True
 
 
@@ -61,21 +76,26 @@ async def _async_run_history_import(
     contract_token: str,
     coordinator: "EGLDataCoordinator",
 ) -> None:
-    """Import initial en tâche de fond. Pose le flag et mémorise la dernière date.
-
-    Utilise sa propre instance EGLClient pour ne pas interférer avec le coordinator.
-    """
+    """Import initial en tâche de fond avec son propre client EGL."""
     sensor_unique_id = coordinator._sensor_unique_id
+    _LOGGER.info("EGL: import historique démarré (sensor_id=%s)", sensor_unique_id)
+
     import_client = EGLClient(entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD])
     try:
-        await import_client.authenticate()
+        try:
+            await import_client.authenticate()
+        except EGLAuthError as err:
+            _LOGGER.error("EGL: authentification échouée pour l'import historique : %s", err)
+            return
+
         count, last_date = await async_import_history(
             hass, import_client, contract_token, sensor_unique_id
         )
         _LOGGER.info("EGL: %d jours d'historique importés (dernier : %s)", count, last_date)
+
     except Exception as err:  # noqa: BLE001
-        _LOGGER.error("EGL: échec de l'import historique : %s", err)
-        return  # flag non posé → nouvel essai au prochain démarrage
+        _LOGGER.error("EGL: échec de l'import historique : %s", err, exc_info=True)
+        return  # flag non posé → nouvel essai au prochain démarrage HA
     finally:
         await import_client.close()
 
@@ -84,6 +104,7 @@ async def _async_run_history_import(
     if last_date:
         new_data[CONF_LAST_KNOWN_DATE] = last_date
     hass.config_entries.async_update_entry(entry, data=new_data)
+    _LOGGER.info("EGL: flag history_imported posé, dernière date = %s", last_date)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
