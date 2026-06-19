@@ -9,6 +9,6 @@
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/aldweb/ha-egl-water/issues",
-  "requirements": []
-  "version": "1.0.0",
+  "requirements": [],
+  "version": "1.0.0"
 }
