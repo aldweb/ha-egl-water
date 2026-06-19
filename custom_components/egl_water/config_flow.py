@@ -108,12 +108,22 @@ class EGLOptionsFlow(OptionsFlow):
                 if t1 == t2:
                     errors["base"] = "same_times"
                 else:
+                    opts = self._config_entry.options
+                    old_price = opts.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
+                    new_price = user_input[CONF_PRICE_PER_M3]
+                    # Si le tarif a changé, on réinitialise cost_imported pour
+                    # déclencher un recalcul rétroactif via _async_update_options
+                    from .const import CONF_COST_IMPORTED
+                    cost_imported = opts.get(CONF_COST_IMPORTED, False)
+                    if abs(new_price - old_price) > 0.0001:
+                        cost_imported = False
                     return self.async_create_entry(
                         title="",
                         data={
                             CONF_UPDATE_TIME_1: t1,
                             CONF_UPDATE_TIME_2: t2,
-                            CONF_PRICE_PER_M3: user_input[CONF_PRICE_PER_M3],
+                            CONF_PRICE_PER_M3: new_price,
+                            CONF_COST_IMPORTED: cost_imported,
                         },
                     )
 

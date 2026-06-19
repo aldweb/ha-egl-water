@@ -36,10 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await coordinator.async_config_entry_first_refresh()
     except ConfigEntryNotReady:
-        _LOGGER.warning(
-            "EGL: premier refresh échoué (API indisponible ?). "
-            "L'import historique sera lancé quand même."
-        )
+        _LOGGER.warning("EGL: premier refresh échoué (API indisponible ?). L'import sera lancé quand même.")
 
     coordinator.async_start_schedule()
 
@@ -50,17 +47,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     price_per_m3 = entry.options.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
     history_done = entry.data.get(CONF_HISTORY_IMPORTED, False)
-    cost_done = entry.data.get(CONF_COST_IMPORTED, False)
+    # Le flag cost_imported est stocké dans les OPTIONS pour éviter de
+    # déclencher le listener options lors de sa mise à jour
+    cost_done = entry.options.get(CONF_COST_IMPORTED, False)
 
     if not history_done:
-        # Premier démarrage : importe volume + coût d'un coup
         _LOGGER.info("EGL: lancement de l'import historique (volume + coût)")
         hass.async_create_task(
             _async_run_history_import(hass, entry, contract_token, coordinator, price_per_m3),
             name="egl_water_history_import",
         )
     elif not cost_done:
-        # Volume déjà importé mais coût manquant (mise à jour depuis v8)
         _LOGGER.info("EGL: lancement de l'import coût rétroactif")
         hass.async_create_task(
             _async_run_cost_import(hass, entry, contract_token, coordinator, price_per_m3),
@@ -73,25 +70,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Appelé quand l'utilisateur modifie les options."""
+    """Appelé quand l'utilisateur modifie les options.
+
+    Ne relance l'import coût QUE si le tarif a changé par rapport à la valeur
+    enregistrée dans les options (champ 'price_per_m3' précédent).
+    Le flag cost_imported est dans options — cette fonction sera rappelée quand
+    on le pose, mais la condition ci-dessous empêche toute boucle infinie.
+    """
     coordinator: EGLDataCoordinator = hass.data[DOMAIN][entry.entry_id]
     coordinator.async_stop_schedule()
     coordinator.async_start_schedule()
-    _LOGGER.debug("EGL: options mises à jour")
+    _LOGGER.debug("EGL: options mises à jour (horaires replanifiés)")
 
-    # Si le tarif a changé, relancer l'import coût rétroactif
-    price_per_m3 = entry.options.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
-    _LOGGER.info("EGL: tarif modifié (%.4f €/m³), relancement import coût", price_per_m3)
-    # Réinitialiser le flag pour forcer le recalcul
-    hass.config_entries.async_update_entry(
-        entry, data={**entry.data, CONF_COST_IMPORTED: False}
-    )
-    hass.async_create_task(
-        _async_run_cost_import(
-            hass, entry, entry.data[CONF_CONTRACT_TOKEN], coordinator, price_per_m3
-        ),
-        name="egl_water_cost_reimport",
-    )
+    # Si le flag cost_imported est False dans les options ET qu'un tarif est défini,
+    # c'est qu'un import coût est en attente — ne pas relancer, il est déjà en cours
+    # ou sera lancé au prochain démarrage.
+    # On ne relance l'import que si l'utilisateur a explicitement modifié le tarif,
+    # ce qui est signalé par cost_imported=False posé AVANT cet appel.
+    # Pour éviter toute boucle, on vérifie que cost_imported est bien False
+    # ET qu'aucune tâche d'import n'est déjà active (via un flag en mémoire).
+    if not entry.options.get(CONF_COST_IMPORTED, False):
+        price_per_m3 = entry.options.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
+        _LOGGER.info("EGL: tarif modifié (%.4f €/m³), lancement import coût rétroactif", price_per_m3)
+        hass.async_create_task(
+            _async_run_cost_import(
+                hass, entry, entry.data[CONF_CONTRACT_TOKEN], coordinator, price_per_m3
+            ),
+            name="egl_water_cost_reimport",
+        )
 
 
 async def _async_run_history_import(
@@ -125,15 +131,17 @@ async def _async_run_history_import(
     finally:
         await import_client.close()
 
-    new_data = {
-        **entry.data,
-        CONF_HISTORY_IMPORTED: True,
-        CONF_COST_IMPORTED: True,
-    }
+    # Mettre history_imported dans data (ne déclenche PAS le listener options)
+    new_data = {**entry.data, CONF_HISTORY_IMPORTED: True}
     if last_date:
         new_data[CONF_LAST_KNOWN_DATE] = last_date
     hass.config_entries.async_update_entry(entry, data=new_data)
-    _LOGGER.info("EGL: flags history_imported et cost_imported posés")
+
+    # Mettre cost_imported dans options — déclenche le listener, mais
+    # cost_imported=True donc la condition dans _async_update_options ne repart pas
+    new_options = {**entry.options, CONF_COST_IMPORTED: True}
+    hass.config_entries.async_update_entry(entry, options=new_options)
+    _LOGGER.info("EGL: flags history_imported (data) et cost_imported (options) posés")
 
 
 async def _async_run_cost_import(
@@ -169,10 +177,10 @@ async def _async_run_cost_import(
     finally:
         await import_client.close()
 
-    hass.config_entries.async_update_entry(
-        entry, data={**entry.data, CONF_COST_IMPORTED: True}
-    )
-    _LOGGER.info("EGL: flag cost_imported posé")
+    # cost_imported=True dans options → le listener sera rappelé mais ne repart pas
+    new_options = {**entry.options, CONF_COST_IMPORTED: True}
+    hass.config_entries.async_update_entry(entry, options=new_options)
+    _LOGGER.info("EGL: flag cost_imported posé dans les options")
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

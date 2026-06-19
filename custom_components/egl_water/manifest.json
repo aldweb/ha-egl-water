@@ -1,7 +1,7 @@
 {
   "domain": "egl_water",
   "name": "Eau du Grand Lyon",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "documentation": "https://github.com/aldweb/ha-egl-water",
   "issue_tracker": "https://github.com/aldweb/ha-egl-water/issues",
   "codeowners": ["@aldweb"],
