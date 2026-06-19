@@ -82,3 +82,4 @@ FETCH_MONTHLY_DAYS = 35
 # Tarif TTC tout compris en €/m³
 CONF_PRICE_PER_M3 = "price_per_m3"
 DEFAULT_PRICE_PER_M3 = 3.56  # à titre indicatif, à ajuster selon facture
+CONF_COST_IMPORTED = "cost_imported"         # flag import coût historique effectué

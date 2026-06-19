@@ -29,6 +29,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import EGLApiError, EGLAuthError, EGLClient
 from .const import (
+    CONF_PRICE_PER_M3,
+    DEFAULT_PRICE_PER_M3,
     CONF_LAST_KNOWN_DATE,
     DOMAIN,
     FETCH_MONTHLY_DAYS,
@@ -124,11 +126,13 @@ class EGLDataCoordinator(DataUpdateCoordinator):
             return self.data or {}
 
         # --- Push incrémental dans recorder ---
+        price_per_m3 = self._entry.options.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
         new_last_date = await async_push_new_entries(
             self.hass,
             entries,
             self._sensor_unique_id,
             last_known_date,
+            price_per_m3=price_per_m3,
         )
 
         # Persister la nouvelle dernière date si elle a progressé
