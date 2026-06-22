@@ -1,7 +1,6 @@
 # EGL (Eau du Grand Lyon) — Intégration Home Assistant
 
 [![Works with Home Assistant](https://img.shields.io/badge/Works%20with-Home%20Assistant-41BDF5?logo=homeassistant&logoColor=white)](https://www.home-assistant.io/)
-![HA min](https://img.shields.io/badge/Home%20Assistant-%3E%3D%202026.3-green)
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg?logo=homeassistantcommunitystore&logoColor=white)](https://github.com/hacs/integration)
 [![Latest Version](https://img.shields.io/github/v/tag/aldweb/ha-egl-water?label=Latest%20Version&logo=github&color=blue)](https://github.com/aldweb/ha-egl-water/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -41,7 +40,7 @@ L'attribut `retard_publication_jours` du capteur journalier indique le nombre de
 
 ## Prérequis
 
-- Home Assistant ≥ 2025.1.0
+- Home Assistant ≥ 2026.3.0
 - Un compte actif sur [agence.eaudugrandlyon.com](https://agence.eaudugrandlyon.com) (compteur Téléo compatible)
 
 ---
