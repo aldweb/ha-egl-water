@@ -1,8 +1,10 @@
 # EGL (Eau du Grand Lyon) — Intégration Home Assistant
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+[![Works with Home Assistant](https://img.shields.io/badge/Works%20with-Home%20Assistant-41BDF5?logo=homeassistant&logoColor=white)](https://www.home-assistant.io/)
 ![HA min](https://img.shields.io/badge/Home%20Assistant-%3E%3D%202026.3-green)
+[![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg?logo=homeassistantcommunitystore&logoColor=white)](https://github.com/hacs/integration)
+[![Latest Version](https://img.shields.io/github/v/tag/aldweb/ha-egl-water?label=Latest%20Version&logo=github&color=blue)](https://github.com/aldweb/ha-egl-water/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > **Note for English speakers:** This documentation is intentionally written in French. This integration is specific to the Lyon metropolitan area (France) and is only relevant to residents served by the *Eau du Grand Lyon* water utility. There is no English-speaking audience for this project.
 
