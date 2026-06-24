@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Eau du Grand Lyon",
+        "description": "Enter your credentials from the customer portal at agence.eaudugrandlyon.com",
+        "data": {
+          "username": "Email address",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials. Please check your email address and password.",
+      "cannot_connect": "Unable to reach the Eau du Grand Lyon server."
+    },
+    "abort": {
+      "already_configured": "This account is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Settings",
+        "description": "Schedules are in local time (e.g. 08:00 = 8 AM Paris time). The all-inclusive rate can be calculated from your bill: Total incl. tax ÷ m³ consumed.",
+        "data": {
+          "update_time_1": "1st refresh (HH:MM)",
+          "update_time_2": "2nd refresh (HH:MM)",
+          "price_per_m3": "All-inclusive rate (€/m³)"
+        }
+      }
+    },
+    "error": {
+      "invalid_time_format": "Invalid format. Use HH:MM, for example 08:00 or 16:30.",
+      "same_times": "The two schedules must be different."
+    }
+  }
+}
