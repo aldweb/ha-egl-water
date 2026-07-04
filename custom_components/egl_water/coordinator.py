@@ -29,6 +29,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import EGLApiError, EGLAuthError, EGLClient
 from .const import (
+    CHUNK_DAYS,
     CONF_PRICE_PER_M3,
     DEFAULT_PRICE_PER_M3,
     CONF_LAST_KNOWN_DATE,
@@ -90,6 +91,66 @@ class EGLDataCoordinator(DataUpdateCoordinator):
     # Récupération des données
     # ------------------------------------------------------------------
 
+    async def _fetch_range_chunked(
+        self, start: datetime, end: datetime
+    ) -> list[dict]:
+        """Récupère [start, end] en tranches de CHUNK_DAYS.
+
+        L'appel unique sur toute la plage n'est fiable que sur de courtes
+        durées (l'import historique utilise déjà des tranches de 90 jours
+        pour la même raison). Si un refresh a été manqué longtemps (HA
+        arrêté, panne réseau, etc.), la plage peut dépasser largement
+        FETCH_OVERLAP_DAYS : on découpe donc systématiquement pour ne
+        jamais perdre de jours, quelle que soit la durée du retard.
+        """
+        all_entries: list[dict] = []
+        chunk_start = start
+        last_error: EGLApiError | None = None
+        while chunk_start < end:
+            chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS), end)
+            try:
+                entries = await self._client.fetch_daily_consumption(
+                    self._contract_token, chunk_start, chunk_end
+                )
+            except EGLAuthError:
+                # Pas de sens à continuer si l'authentification échoue.
+                raise
+            except EGLApiError as err:
+                # On garde la trace de l'erreur mais on continue les autres
+                # tranches : un raté ponctuel ne doit pas faire perdre tout
+                # le rattrapage déjà récupéré.
+                _LOGGER.warning(
+                    "EGL: erreur tranche %s→%s : %s",
+                    chunk_start.strftime("%Y-%m-%d"),
+                    chunk_end.strftime("%Y-%m-%d"),
+                    err,
+                )
+                last_error = err
+                chunk_start = chunk_end
+                continue
+            all_entries.extend(entries)
+            _LOGGER.debug(
+                "EGL: tranche %s→%s : %d jours",
+                chunk_start.strftime("%Y-%m-%d"),
+                chunk_end.strftime("%Y-%m-%d"),
+                len(entries),
+            )
+            chunk_start = chunk_end
+
+        if not all_entries and last_error is not None:
+            # Aucune tranche n'a réussi : on remonte l'erreur pour que le
+            # coordinator la traite comme un échec de refresh classique.
+            raise last_error
+
+        # Dédoublonnage (les bornes de tranches peuvent se chevaucher d'un jour) + tri
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for e in sorted(all_entries, key=lambda x: x["date"]):
+            if e["date"] not in seen:
+                seen.add(e["date"])
+                unique.append(e)
+        return unique
+
     async def _async_update_data(self) -> dict:
         now = datetime.now(timezone.utc)
         last_known_date: str | None = self._entry.data.get(CONF_LAST_KNOWN_DATE)
@@ -113,9 +174,7 @@ class EGLDataCoordinator(DataUpdateCoordinator):
         )
 
         try:
-            entries = await self._client.fetch_daily_consumption(
-                self._contract_token, fetch_start, now
-            )
+            entries = await self._fetch_range_chunked(fetch_start, now)
         except EGLAuthError as err:
             raise UpdateFailed(f"Authentification EGL échouée : {err}") from err
         except EGLApiError as err:

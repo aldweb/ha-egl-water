@@ -32,6 +32,10 @@ from .const import CHUNK_DAYS, DOMAIN, HISTORY_YEARS
 
 _LOGGER = logging.getLogger(__name__)
 
+# Date plancher utilisée pour retrouver le cumul précédent lors d'un push
+# incrémental, quel que soit l'ancienneté du dernier point connu.
+SENTINEL_START = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
 
 # ---------------------------------------------------------------------------
 # Metadata
@@ -233,10 +237,17 @@ async def async_push_new_entries(
     first_new_dt = datetime.strptime(new_entries[0]["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
     async def _get_prior_sum(stat_id: str) -> float:
+        # On ne borne pas le début de la recherche : si le refresh a été
+        # manqué longtemps (HA arrêté, panne réseau...), le dernier point
+        # connu peut être bien plus vieux que quelques semaines. Une borne
+        # fixe (ex: 40 jours) ferait retomber le cumul à 0 et casserait la
+        # courbe croissante attendue par le tableau de bord Énergie.
+        # SENTINEL_START est antérieure à tout import historique possible
+        # (HISTORY_YEARS ans max), donc couvre toujours le cas réel.
         prior = await instance.async_add_executor_job(
             statistics_during_period,
             hass,
-            first_new_dt - timedelta(days=40),
+            SENTINEL_START,
             first_new_dt,
             {stat_id},
             "day",
