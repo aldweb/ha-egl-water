@@ -99,7 +99,7 @@ L'intégration utilise le flux **OAuth2 PKCE** de l'espace client EGL (identique
 
 ### Mise à jour des données
 
-Les données sont rafraîchies à deux horaires fixes configurables (pas d'intervalle dérivant). À chaque refresh, l'API est interrogée sur une fenêtre remontant à **10 jours avant le dernier relevé connu**, ce qui permet de récupérer les publications groupées ou rétroactives d'EGL.
+Les données sont rafraîchies à deux horaires fixes configurables (pas d'intervalle dérivant). À chaque refresh, l'API est interrogée depuis **10 jours avant le dernier relevé connu jusqu'à aujourd'hui**, ce qui permet de récupérer les publications groupées ou rétroactives d'EGL. Si ce dernier relevé remonte à plus de quelques jours (Home Assistant arrêté, panne réseau…), cette fenêtre est automatiquement découpée en tranches de 90 jours (comme pour l'import historique) afin de ne perdre aucune journée, quelle que soit la durée de l'interruption.
 
 Les nouvelles entrées sont poussées directement dans le **recorder** de Home Assistant via les statistiques externes — le tableau de bord Énergie les voit immédiatement sans redémarrage.
 
