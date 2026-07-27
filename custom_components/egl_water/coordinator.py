@@ -3,12 +3,17 @@
 Scheduling :
   Deux déclencheurs fixes par jour (UPDATE_TIMES_UTC), pas d'intervalle dérivant.
 
-Stratégie de fetch incrémental :
-  À chaque refresh on interroge l'API depuis (last_known_date - FETCH_OVERLAP_DAYS)
-  jusqu'à aujourd'hui. L'overlap de 10 jours absorbe les publications groupées
-  irrégulières d'EGL (ex: vendredi+samedi publiés le mardi suivant).
-  Tous les jours nouvellement publiés — quel que soit leur nombre — sont poussés
-  dans recorder via async_push_new_entries, et last_known_date est mis à jour.
+Stratégie de fetch :
+  À chaque refresh on interroge systématiquement l'API sur une fenêtre glissante
+  fixe de REFRESH_WINDOW_DAYS jours (aujourd'hui - 90 j → aujourd'hui), quelle
+  que soit la dernière date déjà connue. Toute la fenêtre est ensuite réécrite
+  dans recorder via async_overwrite_recent_entries, y compris les jours à 0
+  litres. Ce choix, plus simple qu'un fetch incrémental avec fenêtre d'overlap
+  calibrée, absorbe sans logique particulière le comportement d'EGL : jours
+  laissés à 0 puis remplis, puis corrigés rétroactivement (y compris repassés
+  à 0). Le prix à payer est un appel API légèrement plus gros à chaque refresh,
+  ce qui est négligeable comparé au risque de perdre silencieusement des
+  corrections tardives.
 
 Cumuls exposés aux capteurs :
   - daily_liters / daily_date   : dernier jour disponible (> 0 litres)
@@ -30,15 +35,14 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import EGLApiError, EGLAuthError, EGLClient
 from .const import (
     CHUNK_DAYS,
+    CONF_LAST_KNOWN_DATE,
     CONF_PRICE_PER_M3,
     DEFAULT_PRICE_PER_M3,
-    CONF_LAST_KNOWN_DATE,
     DOMAIN,
-    FETCH_MONTHLY_DAYS,
-    FETCH_OVERLAP_DAYS,
+    REFRESH_WINDOW_DAYS,
     get_update_times,
 )
-from .history_import import async_push_new_entries
+from .history_import import async_overwrite_recent_entries
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,10 +102,10 @@ class EGLDataCoordinator(DataUpdateCoordinator):
 
         L'appel unique sur toute la plage n'est fiable que sur de courtes
         durées (l'import historique utilise déjà des tranches de 90 jours
-        pour la même raison). Si un refresh a été manqué longtemps (HA
-        arrêté, panne réseau, etc.), la plage peut dépasser largement
-        FETCH_OVERLAP_DAYS : on découpe donc systématiquement pour ne
-        jamais perdre de jours, quelle que soit la durée du retard.
+        pour la même raison). La fenêtre de refresh vaut désormais elle-même
+        REFRESH_WINDOW_DAYS (90 j), donc ce découpage en tranches reste la
+        garantie de fiabilité de l'appel API, même si la fenêtre demandée ne
+        varie plus dans le temps.
         """
         all_entries: list[dict] = []
         chunk_start = start
@@ -153,24 +157,19 @@ class EGLDataCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict:
         now = datetime.now(timezone.utc)
-        last_known_date: str | None = self._entry.data.get(CONF_LAST_KNOWN_DATE)
 
-        # Fenêtre de fetch :
-        # - Si on a une date connue : on recule de FETCH_OVERLAP_DAYS pour capturer
-        #   les jours publiés rétroactivement (groupés, irréguliers).
-        # - Sinon (premier refresh avant import historique) : on remonte FETCH_MONTHLY_DAYS
-        #   pour avoir les cumuls mensuels.
-        if last_known_date:
-            anchor = datetime.strptime(last_known_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            fetch_start = anchor - timedelta(days=FETCH_OVERLAP_DAYS)
-        else:
-            fetch_start = now - timedelta(days=FETCH_MONTHLY_DAYS)
+        # Fenêtre de fetch : systématiquement les REFRESH_WINDOW_DAYS derniers
+        # jours, indépendamment de toute date connue précédemment. On accepte
+        # de re-télécharger et de réécraser une fenêtre en grande partie déjà
+        # connue à chaque refresh : c'est le prix de la simplicité et de la
+        # robustesse face aux corrections rétroactives d'EGL.
+        fetch_start = now - timedelta(days=REFRESH_WINDOW_DAYS)
 
         _LOGGER.debug(
-            "EGL: fetch %s → %s (last_known=%s)",
+            "EGL: fetch %s → %s (fenêtre glissante fixe de %d j)",
             fetch_start.strftime("%Y-%m-%d"),
             now.strftime("%Y-%m-%d"),
-            last_known_date,
+            REFRESH_WINDOW_DAYS,
         )
 
         try:
@@ -184,17 +183,18 @@ class EGLDataCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("EGL: aucune donnée reçue, conservation de l'état précédent")
             return self.data or {}
 
-        # --- Push incrémental dans recorder ---
+        # --- Écrasement systématique de la fenêtre dans recorder ---
         price_per_m3 = self._entry.options.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
-        new_last_date = await async_push_new_entries(
+        new_last_date = await async_overwrite_recent_entries(
             self.hass,
             entries,
             self._sensor_unique_id,
-            last_known_date,
             price_per_m3=price_per_m3,
         )
 
-        # Persister la nouvelle dernière date si elle a progressé
+        # Persister la dernière date vue, à titre purement informatif/diagnostic
+        # (n'influence plus le calcul de la fenêtre de fetch, qui est fixe).
+        last_known_date: str | None = self._entry.data.get(CONF_LAST_KNOWN_DATE)
         if new_last_date and new_last_date != last_known_date:
             self.hass.config_entries.async_update_entry(
                 self._entry,
@@ -216,7 +216,7 @@ class EGLDataCoordinator(DataUpdateCoordinator):
                 last_published["date"], lag_days,
             )
 
-        # --- Cumuls (on a toujours au moins FETCH_MONTHLY_DAYS de données) ---
+        # --- Cumuls (on a toujours REFRESH_WINDOW_DAYS jours de données, ≥ 30) ---
         current_month = now.strftime("%Y-%m")
         monthly_total = sum(e["liters"] for e in entries if e["date"].startswith(current_month))
 

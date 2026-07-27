@@ -72,12 +72,17 @@ def get_update_times(hass, options: dict) -> list[tuple[int, int]]:
 HISTORY_YEARS = 2       # profondeur à importer au premier démarrage
 CHUNK_DAYS = 90         # taille des tranches d'appel API
 
-# Fenêtre de fetch incrémental : on remonte depuis (last_known_date - FETCH_OVERLAP_DAYS)
-# pour absorber les publications groupées (vendredi+samedi publiés le mardi, etc.)
-FETCH_OVERLAP_DAYS = 10
-
-# Pour les cumuls mensuels on remonte 35 jours (couvre le mois entier + marge retard)
-FETCH_MONTHLY_DAYS = 35
+# Fenêtre de rafraîchissement glissante : à CHAQUE refresh on relit
+# systématiquement les REFRESH_WINDOW_DAYS derniers jours et on écrase les
+# statistiques recorder correspondantes (voir history_import.async_overwrite_recent_entries).
+#
+# EGL peut publier un jour à 0 L, puis le remplir plus tard, puis corriger
+# rétroactivement des valeurs déjà publiées (y compris repasser un jour à 0).
+# Une fenêtre glissante fixe, entièrement réécrite à chaque fois, absorbe tous
+# ces cas sans logique de détection de "nouveauté" : pas de last_known_date,
+# pas d'overlap à calibrer, pas de risque d'oublier une correction tardive.
+# 90 jours (= 3 mois) est une marge large par rapport aux délais de correction observés.
+REFRESH_WINDOW_DAYS = 90
 
 # Tarif TTC tout compris en €/m³
 CONF_PRICE_PER_M3 = "price_per_m3"
