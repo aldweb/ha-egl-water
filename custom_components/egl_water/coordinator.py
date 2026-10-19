@@ -1,8 +1,7 @@
 """Coordinator pour la mise à jour des données EGL.
 
 Scheduling :
-  Deux déclencheurs fixes par jour, en heure locale Home Assistant (DST géré
-  par async_track_time_change), pas d'intervalle dérivant.
+  Deux déclencheurs fixes par jour, en heure locale Home Assistant, pas d'intervalle dérivant.
 
 Stratégie de fetch :
   À chaque refresh on interroge systématiquement l'API sur une fenêtre glissante
@@ -89,7 +88,7 @@ class EGLDataCoordinator(DataUpdateCoordinator):
 
     @callback
     def _async_scheduled_refresh(self, now: datetime) -> None:
-        _LOGGER.debug("EGL: déclenchement planifié à %s (heure locale)", now.strftime("%H:%M"))
+        _LOGGER.debug("EGL: déclenchement planifié à %s", now.strftime("%H:%M"))
         self.hass.async_create_task(self.async_refresh())
 
     # ------------------------------------------------------------------
