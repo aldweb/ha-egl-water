@@ -2,7 +2,13 @@
 
 Deux usages :
   1. `async_import_history`  — import initial complet (2 ans), appelé une seule fois.
-  2. `async_push_new_entries` — push incrémental, appelé à chaque refresh du coordinator.
+  2. `async_overwrite_recent_entries` — écrase la fenêtre glissante (REFRESH_WINDOW_DAYS
+     jours), appelé à chaque refresh du coordinator. Contrairement à un push
+     incrémental, TOUS les jours de la fenêtre sont réécrits (y compris ceux à 0 L) :
+     EGL peut publier un jour à 0 L, puis le remplir, puis corriger rétroactivement
+     des valeurs déjà publiées. Recorder écrase les points existants aux mêmes
+     timestamps, donc rejouer systématiquement toute la fenêtre absorbe ces
+     corrections sans avoir besoin de détecter ce qui a changé.
 
 Statistiques recorder créées par entrée :
   - `<domain>:<slug>_daily`       volume en litres (sum cumulatif)
@@ -197,58 +203,56 @@ async def async_import_cost_history(
 
 
 # ---------------------------------------------------------------------------
-# Push incrémental
+# Écrasement de la fenêtre glissante
 # ---------------------------------------------------------------------------
 
-async def async_push_new_entries(
+async def async_overwrite_recent_entries(
     hass: HomeAssistant,
     entries: list[dict],
     sensor_unique_id: str,
-    last_known_date: str | None,
     price_per_m3: float | None = None,
 ) -> str | None:
-    """Pousse dans recorder tous les jours plus récents que last_known_date.
+    """Écrase dans recorder TOUTE la fenêtre d'entrées fournie par le coordinator.
 
-    Gère volume et coût en un seul appel.
-    Retourne la nouvelle dernière date importée (ou last_known_date si rien de neuf).
+    Gère volume et coût en un seul appel. Ne filtre ni sur une date connue, ni
+    sur les jours à 0 litres : ces derniers sont volontairement écrits (comme
+    valeur 0) pour que recorder ait un point à chaque date de la fenêtre, et
+    pour qu'une correction ultérieure d'EGL sur ce même jour soit reprise au
+    prochain refresh, puisque toute la fenêtre est rejouée systématiquement.
+
+    `async_add_external_statistics` écrase les points existants aux mêmes
+    timestamps (comportement idempotent) : rejouer une fenêtre déjà connue
+    ne duplique rien, elle est simplement recalculée à l'identique ou corrigée.
+
+    Retourne la dernière date de la fenêtre (ou None si `entries` est vide).
     """
     if not entries:
-        return last_known_date
+        return None
 
-    new_entries = [
-        e for e in entries
-        if (last_known_date is None or e["date"] > last_known_date)
-        and e["liters"] > 0
-    ]
-
-    if not new_entries:
-        _LOGGER.debug("EGL: aucun nouveau jour à pousser (dernier connu : %s)", last_known_date)
-        return last_known_date
+    sorted_entries = sorted(entries, key=lambda x: x["date"])
 
     _LOGGER.info(
-        "EGL: %d nouveau(x) jour(s) à importer (%s → %s)",
-        len(new_entries),
-        new_entries[0]["date"],
-        new_entries[-1]["date"],
+        "EGL: écrasement de la fenêtre glissante (%s → %s, %d jours)",
+        sorted_entries[0]["date"],
+        sorted_entries[-1]["date"],
+        len(sorted_entries),
     )
 
     vol_id, cost_id = _statistic_ids(sensor_unique_id)
     instance = get_instance(hass)
-    first_new_dt = datetime.strptime(new_entries[0]["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    window_start_dt = datetime.strptime(sorted_entries[0]["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
     async def _get_prior_sum(stat_id: str) -> float:
-        # On ne borne pas le début de la recherche : si le refresh a été
-        # manqué longtemps (HA arrêté, panne réseau...), le dernier point
-        # connu peut être bien plus vieux que quelques semaines. Une borne
-        # fixe (ex: 40 jours) ferait retomber le cumul à 0 et casserait la
-        # courbe croissante attendue par le tableau de bord Énergie.
-        # SENTINEL_START est antérieure à tout import historique possible
-        # (HISTORY_YEARS ans max), donc couvre toujours le cas réel.
+        # Cumul juste avant le début de la fenêtre, pour ancrer le sum
+        # cumulatif recalculé sur la fenêtre. On ne borne pas le début de la
+        # recherche : SENTINEL_START est antérieure à tout import historique
+        # possible (HISTORY_YEARS ans max), donc couvre toujours le cas réel,
+        # y compris si des refresh ont été manqués longtemps.
         prior = await instance.async_add_executor_job(
             statistics_during_period,
             hass,
             SENTINEL_START,
-            first_new_dt,
+            window_start_dt,
             {stat_id},
             "day",
             None,
@@ -262,7 +266,7 @@ async def async_push_new_entries(
     prior_cost_sum = await _get_prior_sum(cost_id) if price_per_m3 is not None else 0.0
 
     vol_stats, cost_stats = _entries_to_stats(
-        new_entries,
+        sorted_entries,
         initial_volume_sum=prior_vol_sum,
         price_per_m3=price_per_m3,
         initial_cost_sum=prior_cost_sum,
@@ -272,6 +276,6 @@ async def async_push_new_entries(
     if cost_stats:
         async_add_external_statistics(hass, _build_cost_metadata(cost_id), cost_stats)
 
-    new_last_date = new_entries[-1]["date"]
-    _LOGGER.debug("EGL: push incrémental OK, nouvelle dernière date : %s", new_last_date)
+    new_last_date = sorted_entries[-1]["date"]
+    _LOGGER.debug("EGL: fenêtre écrasée avec succès, dernière date : %s", new_last_date)
     return new_last_date
