@@ -1,4 +1,9 @@
 """Constantes pour l'intégration Eau du Grand Lyon."""
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from typing import Any
 
 DOMAIN = "egl_water"
 PLATFORMS = ["sensor"]
@@ -26,46 +31,39 @@ CONF_LAST_KNOWN_DATE = "last_known_date"     # dernière date importée (YYYY-MM
 CONF_UPDATE_TIME_1 = "update_time_1"
 CONF_UPDATE_TIME_2 = "update_time_2"
 
-# Valeurs par défaut en heure locale
-# 08:00 CEST = 06:00 UTC  /  16:00 CEST = 14:00 UTC
+# Valeurs par défaut en heure locale (fuseau horaire configuré dans Home Assistant)
 DEFAULT_UPDATE_TIME_1 = "08:00"
 DEFAULT_UPDATE_TIME_2 = "16:00"
 
+_RE_HHMM = re.compile(r"(\d{1,2}):(\d{2})")
 
-def get_update_times(hass, options: dict) -> list[tuple[int, int]]:
-    """Convertit les horaires locaux (HH:MM) en tuples (heure, minute) UTC.
 
-    Utilise le fuseau horaire configuré dans Home Assistant.
+def _parse_hhmm(raw: str, default: str) -> tuple[int, int]:
+    """Parse une chaîne "HH:MM" en (heure, minute), avec repli sur `default`."""
+    for candidate in (raw, default):
+        match = _RE_HHMM.fullmatch(str(candidate).strip())
+        if match:
+            hour, minute = int(match.group(1)), int(match.group(2))
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+    # `default` est une constante valide : ce point n'est jamais atteint
+    raise ValueError(f"Horaire par défaut invalide : {default!r}")
+
+
+def get_update_times(options: Mapping[str, Any]) -> list[tuple[int, int]]:
+    """Renvoie les horaires de mise à jour configurés, en heure locale.
+
+    Les valeurs sont transmises telles quelles à `async_track_time_change`,
+    qui compare déjà à l'heure locale de Home Assistant (DST inclus) :
+    aucune conversion de fuseau n'est nécessaire.
     """
-    import re
-    from datetime import datetime, timezone
-
-    tz = hass.config.time_zone  # ex: "Europe/Paris"
-    try:
-        import zoneinfo
-        local_tz = zoneinfo.ZoneInfo(tz)
-    except Exception:
-        # Fallback : on renvoie les heures telles quelles (supposées UTC)
-        local_tz = timezone.utc
-
-    result = []
-    for key, default in (
-        (CONF_UPDATE_TIME_1, DEFAULT_UPDATE_TIME_1),
-        (CONF_UPDATE_TIME_2, DEFAULT_UPDATE_TIME_2),
-    ):
-        raw = options.get(key, default)
-        m = re.fullmatch(r"(\d{1,2}):(\d{2})", raw.strip())
-        if not m:
-            raw = default
-            m = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
-        local_h, local_min = int(m.group(1)), int(m.group(2))
-
-        # Construire un datetime local fictif (date fixe) pour extraire l'offset
-        ref = datetime(2000, 1, 1, local_h, local_min, tzinfo=local_tz)
-        utc_ref = ref.astimezone(timezone.utc)
-        result.append((utc_ref.hour, utc_ref.minute))
-
-    return result
+    return [
+        _parse_hhmm(options.get(key, default), default)
+        for key, default in (
+            (CONF_UPDATE_TIME_1, DEFAULT_UPDATE_TIME_1),
+            (CONF_UPDATE_TIME_2, DEFAULT_UPDATE_TIME_2),
+        )
+    ]
 
 
 # Import historique

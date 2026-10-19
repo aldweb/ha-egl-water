@@ -1,7 +1,8 @@
 """Coordinator pour la mise à jour des données EGL.
 
 Scheduling :
-  Deux déclencheurs fixes par jour (UPDATE_TIMES_UTC), pas d'intervalle dérivant.
+  Deux déclencheurs fixes par jour, en heure locale Home Assistant (DST géré
+  par async_track_time_change), pas d'intervalle dérivant.
 
 Stratégie de fetch incrémental :
   À chaque refresh on interroge l'API depuis (last_known_date - FETCH_OVERLAP_DAYS)
@@ -69,13 +70,13 @@ class EGLDataCoordinator(DataUpdateCoordinator):
     # ------------------------------------------------------------------
 
     def async_start_schedule(self) -> None:
-        for hour, minute in get_update_times(self.hass, self._entry.options):
+        for hour, minute in get_update_times(self._entry.options):
             unsub = async_track_time_change(
                 self.hass, self._async_scheduled_refresh,
                 hour=hour, minute=minute, second=0,
             )
             self._unsub_timers.append(unsub)
-            _LOGGER.debug("EGL: refresh planifié à %02d:%02d UTC", hour, minute)
+            _LOGGER.debug("EGL: refresh planifié à %02d:%02d (heure locale)", hour, minute)
 
     def async_stop_schedule(self) -> None:
         for unsub in self._unsub_timers:
@@ -84,7 +85,7 @@ class EGLDataCoordinator(DataUpdateCoordinator):
 
     @callback
     def _async_scheduled_refresh(self, now: datetime) -> None:
-        _LOGGER.debug("EGL: déclenchement planifié à %s UTC", now.strftime("%H:%M"))
+        _LOGGER.debug("EGL: déclenchement planifié à %s (heure locale)", now.strftime("%H:%M"))
         self.hass.async_create_task(self.async_refresh())
 
     # ------------------------------------------------------------------
