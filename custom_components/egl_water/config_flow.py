@@ -3,20 +3,28 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
-
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
-from .api import EGLAuthError, EGLClient
+from .api import EGLApiError, EGLAuthError, EGLClient
 from .const import (
-    CONF_PASSWORD,
+    CONF_CONTRACT_TOKEN,
+    CONF_COST_IMPORTED,
     CONF_PRICE_PER_M3,
     CONF_UPDATE_TIME_1,
     CONF_UPDATE_TIME_2,
-    CONF_USERNAME,
     DEFAULT_PRICE_PER_M3,
     DEFAULT_UPDATE_TIME_1,
     DEFAULT_UPDATE_TIME_2,
@@ -41,18 +49,28 @@ STEP_USER_SCHEMA = vol.Schema({
     vol.Required(CONF_PASSWORD): str,
 })
 
+STEP_REAUTH_SCHEMA = vol.Schema({
+    vol.Required(CONF_PASSWORD): str,
+})
 
-async def _validate_credentials(hass: HomeAssistant, data: dict) -> dict:
-    client = EGLClient(data[CONF_USERNAME], data[CONF_PASSWORD])
+
+async def _validate_credentials(hass: HomeAssistant, username: str, password: str) -> str:
+    """Vérifie les identifiants et retourne le token de contrat.
+
+    Lève EGLAuthError (identifiants refusés) ou EGLApiError (EGL injoignable).
+    """
+    session = async_create_clientsession(hass, cookie_jar=aiohttp.CookieJar())
+    client = EGLClient(session, username, password)
     try:
         await client.authenticate()
-        contract_token = await client.get_contract_token()
-        return {"contract_token": contract_token}
+        return await client.get_contract_token()
     finally:
         await client.close()
 
 
 class EGLConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Configuration de l'intégration."""
+
     VERSION = 1
 
     async def async_step_user(
@@ -61,18 +79,22 @@ class EGLConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                extra = await _validate_credentials(self.hass, user_input)
+                contract_token = await _validate_credentials(
+                    self.hass, user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
+                )
             except EGLAuthError:
                 errors["base"] = "invalid_auth"
-            except Exception:
-                _LOGGER.exception("Erreur inattendue lors de la validation")
+            except EGLApiError:
                 errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Erreur inattendue lors de la validation")
+                errors["base"] = "unknown"
             else:
                 await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=f"EGL – {user_input[CONF_USERNAME]}",
-                    data={**user_input, **extra},
+                    data={**user_input, CONF_CONTRACT_TOKEN: contract_token},
                 )
         return self.async_show_form(
             step_id="user",
@@ -80,22 +102,69 @@ class EGLConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    # ------------------------------------------------------------------
+    # Ré-authentification (mot de passe changé côté EGL)
+    # ------------------------------------------------------------------
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Point d'entrée déclenché par ConfigEntryAuthFailed."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Demande le nouveau mot de passe et le valide."""
+        errors: dict[str, str] = {}
+        reauth_entry = self._get_reauth_entry()
+        username = reauth_entry.data[CONF_USERNAME]
+
+        if user_input is not None:
+            try:
+                contract_token = await _validate_credentials(
+                    self.hass, username, user_input[CONF_PASSWORD]
+                )
+            except EGLAuthError:
+                errors["base"] = "invalid_auth"
+            except EGLApiError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Erreur inattendue lors de la ré-authentification")
+                errors["base"] = "unknown"
+            else:
+                return self.async_update_reload_and_abort(
+                    reauth_entry,
+                    data_updates={
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_CONTRACT_TOKEN: contract_token,
+                    },
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=STEP_REAUTH_SCHEMA,
+            description_placeholders={"username": username},
+            errors=errors,
+        )
+
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        return EGLOptionsFlow(config_entry)
+    def async_get_options_flow(config_entry: ConfigEntry) -> EGLOptionsFlow:
+        return EGLOptionsFlow()
 
 
-class EGLOptionsFlow(OptionsFlow):
-    """Permet de modifier les horaires et le tarif."""
+class EGLOptionsFlow(OptionsFlowWithReload):
+    """Permet de modifier les horaires et le tarif.
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        self._config_entry = config_entry
+    OptionsFlowWithReload recharge l'entrée à la validation : les horaires sont
+    replanifiés et, si le tarif a changé, le recalcul rétroactif du coût est relancé.
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        opts = self._config_entry.options
+        opts = self.config_entry.options
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -108,18 +177,17 @@ class EGLOptionsFlow(OptionsFlow):
                 if t1 == t2:
                     errors["base"] = "same_times"
                 else:
-                    opts = self._config_entry.options
                     old_price = opts.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
                     new_price = user_input[CONF_PRICE_PER_M3]
-                    # Si le tarif a changé, on réinitialise cost_imported pour
-                    # déclencher un recalcul rétroactif via _async_update_options
-                    from .const import CONF_COST_IMPORTED
                     cost_imported = opts.get(CONF_COST_IMPORTED, False)
+                    # Tarif modifié : on remet le flag à False, le rechargement de
+                    # l'entrée relance alors le recalcul rétroactif du coût.
                     if abs(new_price - old_price) > 0.0001:
                         cost_imported = False
                     return self.async_create_entry(
                         title="",
                         data={
+                            **opts,
                             CONF_UPDATE_TIME_1: t1,
                             CONF_UPDATE_TIME_2: t2,
                             CONF_PRICE_PER_M3: new_price,

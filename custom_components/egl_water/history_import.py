@@ -1,26 +1,23 @@
 """Import et mise à jour des statistiques de consommation dans recorder HA.
 
 Deux usages :
-  1. `async_import_history`  — import initial complet (2 ans), appelé une seule fois.
+  1. `async_import_history`  — import complet (2 ans) : au premier démarrage, et
+     à nouveau quand le tarif change (recalcul rétroactif du coût).
   2. `async_overwrite_recent_entries` — écrase la fenêtre glissante (REFRESH_WINDOW_DAYS
-     jours), appelé à chaque refresh du coordinator. Contrairement à un push
-     incrémental, TOUS les jours de la fenêtre sont réécrits (y compris ceux à 0 L) :
-     EGL peut publier un jour à 0 L, puis le remplir, puis corriger rétroactivement
-     des valeurs déjà publiées. Recorder écrase les points existants aux mêmes
-     timestamps, donc rejouer systématiquement toute la fenêtre absorbe ces
-     corrections sans avoir besoin de détecter ce qui a changé.
+     jours), appelé à chaque refresh du coordinator. TOUS les jours de la fenêtre
+     sont réécrits (y compris ceux à 0 L) : EGL peut publier un jour à 0 L, puis le
+     remplir, puis corriger rétroactivement des valeurs déjà publiées. Recorder
+     écrase les points existants aux mêmes timestamps, donc rejouer toute la
+     fenêtre absorbe ces corrections sans détecter ce qui a changé.
 
-Statistiques recorder créées par entrée :
-  - `<domain>:<slug>_daily`       volume en litres (sum cumulatif)
-  - `<domain>:<slug>_daily_cost`  coût en € TTC (sum cumulatif)
-
-Le modèle _cost utilise le même timestamp que le volume, et le même sum cumulatif
-croissant — ce qui permet à la page Énergie d'afficher le coût associé au volume.
+Statistiques externes créées par entrée (à utiliser dans le tableau de bord Énergie) :
+  - `egl_water:<slug>_daily`       volume en litres (sum cumulatif)
+  - `egl_water:<slug>_daily_cost`  coût en € TTC (sum cumulatif)
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
@@ -31,16 +28,16 @@ from homeassistant.components.recorder.statistics import (
 )
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import VolumeConverter
 
-from .api import EGLApiError, EGLClient
-from .const import CHUNK_DAYS, DOMAIN, HISTORY_YEARS
+from .api import EGLApiError, EGLAuthError, EGLClient
+from .const import CHUNK_DAYS, DOMAIN, HISTORY_YEARS, statistic_ids
 
 _LOGGER = logging.getLogger(__name__)
 
-# Date plancher utilisée pour retrouver le cumul précédent lors d'un push
-# incrémental, quel que soit l'ancienneté du dernier point connu.
-SENTINEL_START = datetime(2000, 1, 1, tzinfo=timezone.utc)
+# Date plancher utilisée pour retrouver le cumul précédent la fenêtre rafraîchie.
+SENTINEL_START = datetime(2000, 1, 1, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +92,7 @@ def _entries_to_stats(
     for entry in entries:
         liters = entry["liters"]
         cum_vol += liters
-        dt = datetime.strptime(entry["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(entry["date"], "%Y-%m-%d").replace(tzinfo=UTC)
         vol_stats.append(StatisticData(start=dt, state=liters, sum=cum_vol))
 
         if price_per_m3 is not None:
@@ -106,37 +103,31 @@ def _entries_to_stats(
     return vol_stats, cost_stats
 
 
-def _statistic_ids(sensor_unique_id: str) -> tuple[str, str]:
-    """Retourne (volume_id, cost_id)."""
-    slug = sensor_unique_id.lower().replace("-", "_")
-    # sensor_unique_id vaut déjà "<slug>_daily", on remplace le suffixe
-    base = slug.removesuffix("_daily") if slug.endswith("_daily") else slug
-    return f"{DOMAIN}:{base}_daily", f"{DOMAIN}:{base}_daily_cost"
-
-
 # ---------------------------------------------------------------------------
-# Import initial
+# Import complet
 # ---------------------------------------------------------------------------
 
 async def async_import_history(
     hass: HomeAssistant,
     client: EGLClient,
     contract_token: str,
-    sensor_unique_id: str,
+    slug: str,
     price_per_m3: float | None = None,
 ) -> tuple[int, str | None]:
     """Importe 2 ans d'historique volume (et coût si price_per_m3 fourni).
 
+    Idempotent : recorder écrase les valeurs existantes aux mêmes timestamps.
     Retourne (nombre_de_jours_importés, dernière_date | None).
+    Lève EGLAuthError si les identifiants sont refusés.
     """
-    now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    now = dt_util.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     start = now - timedelta(days=HISTORY_YEARS * 365)
 
     _LOGGER.info(
-        "EGL: import initial du %s au %s (coût : %s)",
+        "EGL: import de l'historique du %s au %s (coût : %s)",
         start.strftime("%Y-%m-%d"),
         now.strftime("%Y-%m-%d"),
-        f"{price_per_m3} €/m³" if price_per_m3 else "non",
+        f"{price_per_m3} €/m³" if price_per_m3 is not None else "non",
     )
 
     all_entries: list[dict] = []
@@ -145,6 +136,13 @@ async def async_import_history(
         chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS), now)
         try:
             entries = await client.fetch_daily_consumption(contract_token, chunk_start, chunk_end)
+        except EGLAuthError:
+            # EGLAuthError hérite d'EGLApiError : sans ce `raise`, un refus
+            # d'identifiants serait avalé comme une simple erreur de tranche.
+            raise
+        except EGLApiError as err:
+            _LOGGER.warning("EGL: erreur tranche %s : %s", chunk_start.strftime("%Y-%m-%d"), err)
+        else:
             all_entries.extend(entries)
             _LOGGER.debug(
                 "EGL: tranche %s→%s : %d jours",
@@ -152,54 +150,26 @@ async def async_import_history(
                 chunk_end.strftime("%Y-%m-%d"),
                 len(entries),
             )
-        except EGLApiError as err:
-            _LOGGER.warning("EGL: erreur tranche %s : %s", chunk_start.strftime("%Y-%m-%d"), err)
         chunk_start = chunk_end
 
     if not all_entries:
         _LOGGER.warning("EGL: aucune donnée historique récupérée")
         return 0, None
 
-    # Dédoublonnage + tri
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for e in all_entries:
-        if e["date"] not in seen:
-            seen.add(e["date"])
-            unique.append(e)
-    unique.sort(key=lambda x: x["date"])
+    # Dédoublonnage (les bornes de tranches peuvent se chevaucher) + tri
+    by_date = {e["date"]: e for e in all_entries}
+    unique = [by_date[d] for d in sorted(by_date)]
 
-    vol_id, cost_id = _statistic_ids(sensor_unique_id)
+    vol_id, cost_id = statistic_ids(slug)
     vol_stats, cost_stats = _entries_to_stats(unique, price_per_m3=price_per_m3)
 
     async_add_external_statistics(hass, _build_volume_metadata(vol_id), vol_stats)
     if cost_stats:
         async_add_external_statistics(hass, _build_cost_metadata(cost_id), cost_stats)
 
-    last_date = unique[-1]["date"] if unique else None
-    _LOGGER.info("EGL: import initial terminé — %d jours, dernier : %s", len(vol_stats), last_date)
+    last_date = unique[-1]["date"]
+    _LOGGER.info("EGL: import terminé — %d jours, dernier : %s", len(vol_stats), last_date)
     return len(vol_stats), last_date
-
-
-# ---------------------------------------------------------------------------
-# Import coût rétroactif (appelé si le tarif vient d'être configuré)
-# ---------------------------------------------------------------------------
-
-async def async_import_cost_history(
-    hass: HomeAssistant,
-    client: EGLClient,
-    contract_token: str,
-    sensor_unique_id: str,
-    price_per_m3: float,
-) -> tuple[int, str | None]:
-    """Réécrit toutes les statistiques de coût sur 2 ans.
-
-    Idempotent : recorder écrase les valeurs existantes sur les mêmes timestamps.
-    """
-    _LOGGER.info("EGL: import coût rétroactif à %.4f €/m³", price_per_m3)
-    return await async_import_history(
-        hass, client, contract_token, sensor_unique_id, price_per_m3=price_per_m3
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,20 +179,14 @@ async def async_import_cost_history(
 async def async_overwrite_recent_entries(
     hass: HomeAssistant,
     entries: list[dict],
-    sensor_unique_id: str,
+    slug: str,
     price_per_m3: float | None = None,
 ) -> str | None:
     """Écrase dans recorder TOUTE la fenêtre d'entrées fournie par le coordinator.
 
     Gère volume et coût en un seul appel. Ne filtre ni sur une date connue, ni
-    sur les jours à 0 litres : ces derniers sont volontairement écrits (comme
-    valeur 0) pour que recorder ait un point à chaque date de la fenêtre, et
-    pour qu'une correction ultérieure d'EGL sur ce même jour soit reprise au
-    prochain refresh, puisque toute la fenêtre est rejouée systématiquement.
-
-    `async_add_external_statistics` écrase les points existants aux mêmes
-    timestamps (comportement idempotent) : rejouer une fenêtre déjà connue
-    ne duplique rien, elle est simplement recalculée à l'identique ou corrigée.
+    sur les jours à 0 litres : ces derniers sont volontairement écrits pour qu'une
+    correction ultérieure d'EGL sur ce même jour soit reprise au prochain refresh.
 
     Retourne la dernière date de la fenêtre (ou None si `entries` est vide).
     """
@@ -231,23 +195,20 @@ async def async_overwrite_recent_entries(
 
     sorted_entries = sorted(entries, key=lambda x: x["date"])
 
-    _LOGGER.info(
+    _LOGGER.debug(
         "EGL: écrasement de la fenêtre glissante (%s → %s, %d jours)",
         sorted_entries[0]["date"],
         sorted_entries[-1]["date"],
         len(sorted_entries),
     )
 
-    vol_id, cost_id = _statistic_ids(sensor_unique_id)
+    vol_id, cost_id = statistic_ids(slug)
     instance = get_instance(hass)
-    window_start_dt = datetime.strptime(sorted_entries[0]["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    window_start_dt = datetime.strptime(sorted_entries[0]["date"], "%Y-%m-%d").replace(tzinfo=UTC)
 
     async def _get_prior_sum(stat_id: str) -> float:
-        # Cumul juste avant le début de la fenêtre, pour ancrer le sum
-        # cumulatif recalculé sur la fenêtre. On ne borne pas le début de la
-        # recherche : SENTINEL_START est antérieure à tout import historique
-        # possible (HISTORY_YEARS ans max), donc couvre toujours le cas réel,
-        # y compris si des refresh ont été manqués longtemps.
+        # Cumul juste avant le début de la fenêtre, pour ancrer le sum cumulatif
+        # recalculé. Pas de borne de début utile : SENTINEL_START précède tout import.
         prior = await instance.async_add_executor_job(
             statistics_during_period,
             hass,
@@ -276,6 +237,4 @@ async def async_overwrite_recent_entries(
     if cost_stats:
         async_add_external_statistics(hass, _build_cost_metadata(cost_id), cost_stats)
 
-    new_last_date = sorted_entries[-1]["date"]
-    _LOGGER.debug("EGL: fenêtre écrasée avec succès, dernière date : %s", new_last_date)
-    return new_last_date
+    return sorted_entries[-1]["date"]

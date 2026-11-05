@@ -8,72 +8,99 @@ Stratégie de fetch :
   fixe de REFRESH_WINDOW_DAYS jours (aujourd'hui - 90 j → aujourd'hui), quelle
   que soit la dernière date déjà connue. Toute la fenêtre est ensuite réécrite
   dans recorder via async_overwrite_recent_entries, y compris les jours à 0
-  litres. Ce choix, plus simple qu'un fetch incrémental avec fenêtre d'overlap
-  calibrée, absorbe sans logique particulière le comportement d'EGL : jours
-  laissés à 0 puis remplis, puis corrigés rétroactivement (y compris repassés
-  à 0). Le prix à payer est un appel API légèrement plus gros à chaque refresh,
-  ce qui est négligeable comparé au risque de perdre silencieusement des
-  corrections tardives.
+  litres. Ce choix absorbe sans logique particulière le comportement d'EGL :
+  jours laissés à 0 puis remplis, puis corrigés rétroactivement.
 
-Cumuls exposés aux capteurs :
+Cumuls exposés aux capteurs (calculés en heure locale de Home Assistant) :
   - daily_liters / daily_date   : dernier jour disponible (> 0 litres)
   - daily_lag_days              : écart entre ce jour et aujourd'hui
   - monthly_liters              : cumul du mois calendaire en cours
-  - rolling_30d_liters          : fenêtre glissante 30 j
+  - rolling_30d_liters          : fenêtre glissante de 30 jours (aujourd'hui inclus)
+
+Erreurs :
+  - identifiants refusés  → ConfigEntryAuthFailed (déclenche le flux de réauth)
+  - autre erreur d'API    → UpdateFailed (nouvel essai au prochain horaire)
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import CONF_USERNAME
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import EGLApiError, EGLAuthError, EGLClient
 from .const import (
     CHUNK_DAYS,
-    CONF_LAST_KNOWN_DATE,
+    CONF_COST_IMPORTED,
+    CONF_HISTORY_IMPORTED,
     CONF_PRICE_PER_M3,
     DEFAULT_PRICE_PER_M3,
     DOMAIN,
     REFRESH_WINDOW_DAYS,
     get_update_times,
+    statistic_slug,
 )
 from .history_import import async_overwrite_recent_entries
 
 _LOGGER = logging.getLogger(__name__)
 
+type EGLConfigEntry = ConfigEntry[EGLDataCoordinator]
 
-class EGLDataCoordinator(DataUpdateCoordinator):
+
+class EGLDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Récupère et met en cache les données de consommation EGL."""
+
+    config_entry: EGLConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        entry: EGLConfigEntry,
         client: EGLClient,
         contract_token: str,
     ) -> None:
-        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=None)
-        self._entry = entry
-        self._client = client
-        self._contract_token = contract_token
-        # Prend la partie locale de l'email (avant @) comme slug, ou le username entier si pas un email
-        raw = entry.data["username"].lower()
-        local_part = raw.split("@")[0] if "@" in raw else raw
-        username_slug = local_part.replace(".", "_").replace("-", "_")
-        self._sensor_unique_id = f"{username_slug}_daily"
-        self._unsub_timers: list[Any] = []
+        super().__init__(
+            hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=None
+        )
+        self.client = client
+        self.contract_token = contract_token
+        # Identifiant des statistiques externes, dérivé de l'identifiant EGL.
+        self.statistics_slug = statistic_slug(entry.data[CONF_USERNAME])
+        self._unsub_timers: list[Callable[[], None]] = []
+
+    @property
+    def price_per_m3(self) -> float:
+        """Tarif TTC en €/m³ (options de l'entrée)."""
+        return self.config_entry.options.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
+
+    @property
+    def statistics_ready(self) -> bool:
+        """True quand l'import historique (volume + coût) est terminé.
+
+        Tant qu'il ne l'est pas, le refresh n'écrit PAS dans recorder : l'import
+        réécrit tout l'historique avec des cumuls repartant de zéro, et un
+        refresh concurrent pourrait ancrer ses propres cumuls sur un état partiel.
+        """
+        return bool(
+            self.config_entry.data.get(CONF_HISTORY_IMPORTED)
+            and self.config_entry.options.get(CONF_COST_IMPORTED)
+        )
 
     # ------------------------------------------------------------------
     # Scheduling
     # ------------------------------------------------------------------
 
     def async_start_schedule(self) -> None:
-        for hour, minute in get_update_times(self._entry.options):
+        """Planifie les deux refresh quotidiens (heure locale)."""
+        for hour, minute in get_update_times(self.config_entry.options):
             unsub = async_track_time_change(
                 self.hass, self._async_scheduled_refresh,
                 hour=hour, minute=minute, second=0,
@@ -82,14 +109,14 @@ class EGLDataCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("EGL: refresh planifié à %02d:%02d (heure locale)", hour, minute)
 
     def async_stop_schedule(self) -> None:
+        """Annule les refresh planifiés."""
         for unsub in self._unsub_timers:
             unsub()
         self._unsub_timers.clear()
 
-    @callback
-    def _async_scheduled_refresh(self, now: datetime) -> None:
+    async def _async_scheduled_refresh(self, now: datetime) -> None:
         _LOGGER.debug("EGL: déclenchement planifié à %s", now.strftime("%H:%M"))
-        self.hass.async_create_task(self.async_refresh())
+        await self.async_refresh()
 
     # ------------------------------------------------------------------
     # Récupération des données
@@ -98,31 +125,21 @@ class EGLDataCoordinator(DataUpdateCoordinator):
     async def _fetch_range_chunked(
         self, start: datetime, end: datetime
     ) -> list[dict]:
-        """Récupère [start, end] en tranches de CHUNK_DAYS.
-
-        L'appel unique sur toute la plage n'est fiable que sur de courtes
-        durées (l'import historique utilise déjà des tranches de 90 jours
-        pour la même raison). La fenêtre de refresh vaut désormais elle-même
-        REFRESH_WINDOW_DAYS (90 j), donc ce découpage en tranches reste la
-        garantie de fiabilité de l'appel API, même si la fenêtre demandée ne
-        varie plus dans le temps.
-        """
+        """Récupère [start, end] en tranches de CHUNK_DAYS (appel API fiable sur courte durée)."""
         all_entries: list[dict] = []
         chunk_start = start
         last_error: EGLApiError | None = None
         while chunk_start < end:
             chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS), end)
             try:
-                entries = await self._client.fetch_daily_consumption(
-                    self._contract_token, chunk_start, chunk_end
+                entries = await self.client.fetch_daily_consumption(
+                    self.contract_token, chunk_start, chunk_end
                 )
             except EGLAuthError:
                 # Pas de sens à continuer si l'authentification échoue.
                 raise
             except EGLApiError as err:
-                # On garde la trace de l'erreur mais on continue les autres
-                # tranches : un raté ponctuel ne doit pas faire perdre tout
-                # le rattrapage déjà récupéré.
+                # Un raté ponctuel ne doit pas faire perdre les autres tranches.
                 _LOGGER.warning(
                     "EGL: erreur tranche %s→%s : %s",
                     chunk_start.strftime("%Y-%m-%d"),
@@ -130,52 +147,38 @@ class EGLDataCoordinator(DataUpdateCoordinator):
                     err,
                 )
                 last_error = err
-                chunk_start = chunk_end
-                continue
-            all_entries.extend(entries)
-            _LOGGER.debug(
-                "EGL: tranche %s→%s : %d jours",
-                chunk_start.strftime("%Y-%m-%d"),
-                chunk_end.strftime("%Y-%m-%d"),
-                len(entries),
-            )
+            else:
+                all_entries.extend(entries)
             chunk_start = chunk_end
 
         if not all_entries and last_error is not None:
-            # Aucune tranche n'a réussi : on remonte l'erreur pour que le
-            # coordinator la traite comme un échec de refresh classique.
+            # Aucune tranche n'a réussi : échec de refresh classique.
             raise last_error
 
         # Dédoublonnage (les bornes de tranches peuvent se chevaucher d'un jour) + tri
-        seen: set[str] = set()
-        unique: list[dict] = []
-        for e in sorted(all_entries, key=lambda x: x["date"]):
-            if e["date"] not in seen:
-                seen.add(e["date"])
-                unique.append(e)
-        return unique
+        by_date = {e["date"]: e for e in all_entries}
+        return [by_date[d] for d in sorted(by_date)]
 
-    async def _async_update_data(self) -> dict:
-        now = datetime.now(timezone.utc)
+    async def _async_update_data(self) -> dict[str, Any]:
+        now_utc = dt_util.utcnow()
+        # Les cumuls (mois, 30 jours, retard) se calculent en heure LOCALE de
+        # Home Assistant : entre 00:00 et 02:00 en France, la date UTC est encore
+        # celle de la veille.
+        today = dt_util.now().date()
 
-        # Fenêtre de fetch : systématiquement les REFRESH_WINDOW_DAYS derniers
-        # jours, indépendamment de toute date connue précédemment. On accepte
-        # de re-télécharger et de réécraser une fenêtre en grande partie déjà
-        # connue à chaque refresh : c'est le prix de la simplicité et de la
-        # robustesse face aux corrections rétroactives d'EGL.
-        fetch_start = now - timedelta(days=REFRESH_WINDOW_DAYS)
-
+        fetch_start = now_utc - timedelta(days=REFRESH_WINDOW_DAYS)
         _LOGGER.debug(
             "EGL: fetch %s → %s (fenêtre glissante fixe de %d j)",
             fetch_start.strftime("%Y-%m-%d"),
-            now.strftime("%Y-%m-%d"),
+            now_utc.strftime("%Y-%m-%d"),
             REFRESH_WINDOW_DAYS,
         )
 
         try:
-            entries = await self._fetch_range_chunked(fetch_start, now)
+            entries = await self._fetch_range_chunked(fetch_start, now_utc)
         except EGLAuthError as err:
-            raise UpdateFailed(f"Authentification EGL échouée : {err}") from err
+            # Identifiants refusés : Home Assistant propose la ré-authentification.
+            raise ConfigEntryAuthFailed(f"Identifiants EGL refusés : {err}") from err
         except EGLApiError as err:
             raise UpdateFailed(f"Erreur API EGL : {err}") from err
 
@@ -184,43 +187,34 @@ class EGLDataCoordinator(DataUpdateCoordinator):
             return self.data or {}
 
         # --- Écrasement systématique de la fenêtre dans recorder ---
-        price_per_m3 = self._entry.options.get(CONF_PRICE_PER_M3, DEFAULT_PRICE_PER_M3)
-        new_last_date = await async_overwrite_recent_entries(
-            self.hass,
-            entries,
-            self._sensor_unique_id,
-            price_per_m3=price_per_m3,
-        )
-
-        # Persister la dernière date vue, à titre purement informatif/diagnostic
-        # (n'influence plus le calcul de la fenêtre de fetch, qui est fixe).
-        last_known_date: str | None = self._entry.data.get(CONF_LAST_KNOWN_DATE)
-        if new_last_date and new_last_date != last_known_date:
-            self.hass.config_entries.async_update_entry(
-                self._entry,
-                data={**self._entry.data, CONF_LAST_KNOWN_DATE: new_last_date},
+        if self.statistics_ready:
+            await async_overwrite_recent_entries(
+                self.hass,
+                entries,
+                self.statistics_slug,
+                price_per_m3=self.price_per_m3,
             )
+        else:
+            _LOGGER.debug("EGL: import historique en attente, statistiques non écrites")
 
         # --- Dernier jour avec consommation > 0 (retard de publication variable) ---
         last_published = next(
             (e for e in reversed(entries) if e["liters"] > 0),
             entries[-1],
         )
-        lag_days = (
-            now.date()
-            - datetime.strptime(last_published["date"], "%Y-%m-%d").date()
-        ).days
+        lag_days = (today - datetime.strptime(last_published["date"], "%Y-%m-%d").date()).days
         if lag_days > 0:
             _LOGGER.debug(
                 "EGL: dernière donnée publiée = %s (retard %d j)",
                 last_published["date"], lag_days,
             )
 
-        # --- Cumuls (on a toujours REFRESH_WINDOW_DAYS jours de données, ≥ 30) ---
-        current_month = now.strftime("%Y-%m")
+        # --- Cumuls ---
+        current_month = today.strftime("%Y-%m")
         monthly_total = sum(e["liters"] for e in entries if e["date"].startswith(current_month))
 
-        cutoff_30d = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        # 30 jours glissants, aujourd'hui inclus : de (aujourd'hui - 29 j) à aujourd'hui.
+        cutoff_30d = (today - timedelta(days=29)).isoformat()
         rolling_30d = sum(e["liters"] for e in entries if e["date"] >= cutoff_30d)
 
         return {
@@ -230,5 +224,5 @@ class EGLDataCoordinator(DataUpdateCoordinator):
             "monthly_liters": monthly_total,
             "rolling_30d_liters": rolling_30d,
             "history": entries,
-            "last_update": now.isoformat(),
+            "last_update": now_utc.isoformat(),
         }
