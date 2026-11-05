@@ -118,6 +118,7 @@ Au premier démarrage, l'intégration importe jusqu'à **2 ans** de données en 
 | Capteurs bloqués à `unavailable` | Problème réseau ou changement d'API | Consultez les logs HA |
 | Import historique très long | Normal pour 2 ans de données | Patienter quelques minutes ; les capteurs fonctionnent pendant l'import |
 | Coût non recalculé après changement de tarif | Recalcul en cours en arrière-plan | Patienter quelques minutes |
+| Réparation « The entity no longer has a state class » | Les anciens capteurs avaient un `state_class` (versions ≤ 1.0.4) | Cliquez sur **Corriger** pour supprimer ces anciennes statistiques ; l'historique `egl_water:…` est conservé |
 
 **Consulter les logs :**
 **Paramètres** → **Journaux** → filtrez sur `egl_water`
