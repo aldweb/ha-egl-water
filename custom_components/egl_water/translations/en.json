@@ -8,14 +8,23 @@
           "username": "Email address",
           "password": "Password"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Eau du Grand Lyon",
+        "description": "The password for {username} is no longer accepted by Eau du Grand Lyon. Enter the current password of your customer account.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
       "invalid_auth": "Invalid credentials. Please check your email address and password.",
-      "cannot_connect": "Unable to reach the Eau du Grand Lyon server."
+      "cannot_connect": "Unable to reach the Eau du Grand Lyon server.",
+      "unknown": "Unexpected error. Check the Home Assistant logs for details."
     },
     "abort": {
-      "already_configured": "This account is already configured."
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Re-authentication successful."
     }
   },
   "options": {
@@ -33,6 +42,25 @@
     "error": {
       "invalid_time_format": "Invalid format. Use HH:MM, for example 08:00 or 16:30.",
       "same_times": "The two schedules must be different."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "daily": {
+        "name": "Daily consumption"
+      },
+      "monthly": {
+        "name": "Monthly consumption"
+      },
+      "rolling_30d": {
+        "name": "Last 30 days consumption"
+      },
+      "daily_cost": {
+        "name": "Daily cost"
+      },
+      "monthly_cost": {
+        "name": "Monthly cost"
+      }
     }
   }
 }
