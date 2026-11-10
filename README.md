@@ -24,13 +24,17 @@ Intégration custom pour récupérer votre consommation d'eau quotidienne depuis
 
 ## Capteurs créés
 
+Les capteurs sont regroupés dans l'appareil **Eau du Grand Lyon** ; leurs identifiants sont donc préfixés par `sensor.eau_du_grand_lyon_`.
+
 | Entité | Description | Unité |
 |--------|-------------|-------|
-| `sensor.consommation_journaliere` | Dernier jour publié par EGL | L |
-| `sensor.consommation_mensuelle` | Cumul du mois calendaire en cours | L |
-| `sensor.consommation_30_derniers_jours` | Fenêtre glissante 30 jours | L |
-| `sensor.cout_journalier` | Coût estimé TTC du dernier jour publié | € |
-| `sensor.cout_mensuel` | Coût estimé TTC du mois en cours | € |
+| `sensor.eau_du_grand_lyon_consommation_journaliere` | Dernier jour publié par EGL | L |
+| `sensor.eau_du_grand_lyon_consommation_mensuelle` | Cumul du mois calendaire en cours | L |
+| `sensor.eau_du_grand_lyon_consommation_30_derniers_jours` | Fenêtre glissante 30 jours | L |
+| `sensor.eau_du_grand_lyon_cout_journalier` | Coût estimé TTC du dernier jour publié | € |
+| `sensor.eau_du_grand_lyon_cout_mensuel` | Coût estimé TTC du mois en cours | € |
+
+> Ces identifiants correspondent à une installation avec Home Assistant en français : ils sont construits à partir des noms traduits et peuvent donc différer selon la langue de Home Assistant, ou si vous avez renommé les entités.
 
 > **Note sur le retard de publication** : EGL publie les données avec un délai variable (souvent 1 à 3 jours, parfois le vendredi et samedi d'un seul coup le mardi suivant). L'intégration gère ce décalage automatiquement — le capteur journalier porte toujours la date du dernier relevé réellement disponible.
 
@@ -49,9 +53,19 @@ L'attribut `retard_publication_jours` du capteur journalier indique le nombre de
 
 ## Installation
 
-### Via HACS (recommandé)
+### Via le Marketplace ou HACS (recommandé)
 
-1. Dans HACS → **Intégrations** → ⋮ → **Dépôts personnalisés**
+Depuis Home Assistant 2026.11, HACS est intégré à Home Assistant sous le nom de **Marketplace** (même catalogue, mêmes dépôts). Jusqu'à Home Assistant 2026.10, on utilise HACS.
+
+**Home Assistant 2026.11 ou plus récent : Marketplace**
+
+1. Ouvrez **Paramètres** → **Marketplace**
+2. Recherchez **Eau du Grand Lyon** dans le catalogue. S'il n'y figure pas encore, choisissez **Ajouter depuis un lien** (*Add from link*) et saisissez `https://github.com/aldweb/ha-egl-water` (une connexion GitHub est demandée pour ajouter un dépôt personnalisé)
+3. Installez **Eau du Grand Lyon** : la page de configuration s'ouvre ensuite ; si Home Assistant le demande, redémarrez-le d'abord
+
+**Home Assistant 2026.10 ou plus ancien : HACS**
+
+1. Dans HACS → ⋮ → **Dépôts personnalisés**
 2. Ajoutez `https://github.com/aldweb/ha-egl-water`, catégorie **Intégration**
 3. Installez **Eau du Grand Lyon**
 4. Redémarrez Home Assistant
@@ -86,18 +100,18 @@ Accédez aux options via **Paramètres** → **Appareils et services** → **Eau
 
 ## Tableau de bord Énergie
 
-Le tableau de bord Énergie s'appuie sur deux **statistiques externes** créées par l'intégration (et non sur les capteurs `sensor.*`) :
+Le tableau de bord Énergie s'appuie sur deux **statistiques externes** créées par l'intégration (et non sur les capteurs `sensor.*`, dont le nom ne contient pas `<compte>`) :
 
 | Statistique | Contenu | Unité |
 |-------------|---------|-------|
-| `egl_water:<slug>_daily` | Volume d'eau consommé (cumul) | L |
-| `egl_water:<slug>_daily_cost` | Coût estimé TTC (cumul) | EUR |
+| `egl_water:<compte>_daily` | Volume d'eau consommé (cumul) | L |
+| `egl_water:<compte>_daily_cost` | Coût estimé TTC (cumul) | EUR |
 
-### Retrouver votre `<slug>`
+### Retrouver votre `<compte>`
 
-`<slug>` est dérivé de l'e-mail de votre compte EGL : on prend la partie **avant le `@`**, on la passe en **minuscules**, puis chaque suite de caractères autres que `a-z` et `0-9` est remplacée par un seul `_` (les `_` en début et fin sont supprimés ; si le résultat est vide, le slug vaut `account`).
+`<compte>` (appelé *slug* dans le code, voir `statistic_slug` dans `const.py`) est dérivé de l'e-mail de votre compte EGL : on prend la partie **avant le `@`**, on la passe en **minuscules**, puis chaque suite de caractères autres que `a-z` et `0-9` est remplacée par un seul `_` (les `_` en début et fin sont supprimés ; si le résultat est vide, `<compte>` vaut `account`).
 
-| E-mail | `<slug>` | Statistique de volume |
+| E-mail | `<compte>` | Statistique de volume |
 |--------|----------|-----------------------|
 | `jean.dupont@example.com` | `jean_dupont` | `egl_water:jean_dupont_daily` |
 | `Jean+Eau@example.com` | `jean_eau` | `egl_water:jean_eau_daily` |
@@ -105,12 +119,12 @@ Le tableau de bord Énergie s'appuie sur deux **statistiques externes** créées
 
 > Vous pouvez aussi retrouver les identifiants exacts dans **Outils de développement** → **Statistiques** (recherchez `egl_water`).
 
-### Configuration
+### Ajouter les statistiques au tableau de bord
 
 1. **Paramètres** → **Tableaux de bord** → **Énergie**
 2. Dans la section **Eau**, cliquez sur **Ajouter une source d'eau**
-3. Sélectionnez la statistique de volume `egl_water:<slug>_daily` (nom affiché : *Consommation journalière eau*)
-4. Pour le coût, choisissez l'option « entité qui suit le coût total » et sélectionnez `egl_water:<slug>_daily_cost` (nom affiché : *Coût journalier eau*)
+3. Sélectionnez la statistique de volume `egl_water:<compte>_daily` (nom affiché : *Consommation journalière eau*)
+4. Pour le coût, choisissez l'option « entité qui suit le coût total » et sélectionnez `egl_water:<compte>_daily_cost` (nom affiché : *Coût journalier eau*)
 
 Les statistiques contiennent l'historique importé (2 ans) : les graphiques du tableau de bord Énergie sont donc renseignés rétroactivement dès l'ajout de la source.
 
