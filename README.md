@@ -34,7 +34,7 @@ Les capteurs sont regroupés dans l'appareil **Eau du Grand Lyon** ; leurs ident
 | `sensor.eau_du_grand_lyon_cout_journalier` | Coût estimé TTC du dernier jour publié | € |
 | `sensor.eau_du_grand_lyon_cout_mensuel` | Coût estimé TTC du mois en cours | € |
 
-> Ces identifiants correspondent à une installation avec Home Assistant en français : ils sont construits à partir des noms traduits et peuvent donc différer selon la langue de Home Assistant, ou si vous avez renommé les entités.
+> Les identifiants dépendent de la **langue du serveur Home Assistant** (**Paramètres** → **Système** → **Général**), et non de la langue d'affichage de votre profil : ils sont fixés à la création des entités. Ceux du tableau correspondent à un serveur en français ; avec une autre langue, ils sont construits à partir des noms anglais (par exemple `sensor.eau_du_grand_lyon_daily_consumption`). Vérifiez les vôtres dans **Paramètres** → **Appareils et services** → **Entités**.
 
 > **Note sur le retard de publication** : EGL publie les données avec un délai variable (souvent 1 à 3 jours, parfois le vendredi et samedi d'un seul coup le mardi suivant). L'intégration gère ce décalage automatiquement — le capteur journalier porte toujours la date du dernier relevé réellement disponible.
 
