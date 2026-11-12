@@ -23,8 +23,10 @@ import hashlib
 import logging
 import os
 import re
+import unicodedata
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -55,6 +57,7 @@ COMMON_HEADERS = {
 _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
 # Statuts HTTP par lesquels le serveur signale des identifiants refusés.
 _CREDENTIAL_REJECTED = (400, 401, 403)
+_RE_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
 def _generate_pkce() -> tuple[str, str]:
@@ -81,6 +84,65 @@ def _auth_or_api_error(status: int, message: str) -> EGLApiError:
     return EGLApiError(f"{message} ({status})")
 
 
+@dataclass(frozen=True)
+class EGLContract:
+    """Contrat d'eau tel que listé par EGL (champs utiles uniquement).
+
+    Aucune donnée personnelle (nom, adresse, IBAN...) n'est conservée ici.
+    """
+
+    token: str
+    active: bool
+    status: str | None = None
+    start_date: str | None = None  # AAAA-MM-JJ
+    end_date: str | None = None  # AAAA-MM-JJ
+
+
+def _normalize(value: Any) -> str:
+    """Minuscules sans accents ni espaces superflus (« cessé » -> « cesse »)."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(c for c in text if not unicodedata.combining(c)).strip().lower()
+
+
+def _short_date(value: Any) -> str | None:
+    """« 2026-09-14T00:00:00.000+02:00 » -> « 2026-09-14 » (None si invalide)."""
+    if not isinstance(value, str) or not _RE_ISO_DATE.match(value):
+        return None
+    return value[:10]
+
+
+def _is_active(raw: dict[str, Any]) -> bool:
+    """Un contrat est actif si EGL le déclare tel quel.
+
+    Champ de référence : `statutExtrait` = {"code": "1", "libelle": "actif"}
+    (un contrat cessé a le code "4"). Si ce champ est absent, on se rabat sur
+    l'absence de `dateFin`, sans jamais traiter comme actif un contrat dont le
+    statut est présent mais différent de « actif ».
+    """
+    statut = raw.get("statutExtrait")
+    if isinstance(statut, dict) and (statut.get("code") or statut.get("libelle")):
+        return str(statut.get("code")) == "1" or _normalize(statut.get("libelle")) == "actif"
+    return not raw.get("dateFin")
+
+
+def _parse_contract(raw: Any) -> EGLContract | None:
+    """Convertit un contrat brut de l'API ; None si l'identifiant est introuvable."""
+    if not isinstance(raw, dict):
+        return None
+    # Le token de contrat est dans le champ "id", "token" ou "refContrat"
+    token = raw.get("id") or raw.get("token") or raw.get("refContrat")
+    if not token:
+        return None
+    statut = raw.get("statutExtrait")
+    return EGLContract(
+        token=str(token),
+        active=_is_active(raw),
+        status=str(statut["libelle"]) if isinstance(statut, dict) and statut.get("libelle") else None,
+        start_date=_short_date(raw.get("dateEffet")),
+        end_date=_short_date(raw.get("dateFin")),
+    )
+
+
 class EGLClient:
     """Client asynchrone pour l'API Eau du Grand Lyon.
 
@@ -94,7 +156,6 @@ class EGLClient:
         self._password = password
         self._bearer_token: str | None = None
         self._token_expiry: datetime | None = None
-        self._contract_token: str | None = None
         self._auth_lock = asyncio.Lock()
 
     async def close(self) -> None:
@@ -276,11 +337,12 @@ class EGLClient:
     # Récupération des données
     # ------------------------------------------------------------------
 
-    async def get_contract_token(self) -> str:
-        """Récupère et met en cache le token de contrat depuis la liste des contrats."""
-        if self._contract_token:
-            return self._contract_token
+    async def get_contracts(self) -> list[EGLContract]:
+        """Retourne tous les contrats du compte (actifs ou non), dans l'ordre d'EGL.
 
+        L'ordre de la liste n'est pas stable côté EGL : ne jamais s'y fier pour
+        choisir un contrat, filtrer sur `EGLContract.active`.
+        """
         token = await self._get_valid_token()
         url = f"{BASE_URL}/rest/produits/contrats"
         async with self._request(
@@ -290,19 +352,20 @@ class EGLClient:
                 raise EGLApiError(f"Impossible de récupérer les contrats ({resp.status})")
             data = await self._json(resp)
 
-        # La réponse est une liste de contrats ; on prend le premier
-        contracts = data if isinstance(data, list) else (data or {}).get("contrats", [])
-        if not contracts:
+        raw_contracts = data if isinstance(data, list) else (data or {}).get("contrats", [])
+        if not isinstance(raw_contracts, list) or not raw_contracts:
             raise EGLApiError("Aucun contrat trouvé pour ce compte")
 
-        # Le token de contrat est dans le champ "id", "token" ou "refContrat"
-        first = contracts[0]
-        contract_token = first.get("id") or first.get("token") or first.get("refContrat")
-        if not contract_token:
+        contracts = [c for c in map(_parse_contract, raw_contracts) if c is not None]
+        if not contracts:
             raise EGLApiError("Identifiant de contrat introuvable dans la réponse")
 
-        self._contract_token = str(contract_token)
-        return self._contract_token
+        # Diagnostic sans donnée personnelle : on ne journalise que des compteurs.
+        _LOGGER.debug(
+            "EGL: %d contrat(s) dont %d actif(s)",
+            len(contracts), sum(c.active for c in contracts),
+        )
+        return contracts
 
     async def fetch_daily_consumption(
         self,

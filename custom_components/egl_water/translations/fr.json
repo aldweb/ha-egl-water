@@ -15,16 +15,36 @@
         "data": {
           "password": "Mot de passe"
         }
+      },
+      "contract": {
+        "title": "Choix du contrat",
+        "description": "Plusieurs contrats actifs ont été trouvés sur ce compte. Choisissez celui dont vous souhaitez suivre la consommation.",
+        "data": {
+          "contract_token": "Contrat"
+        }
+      },
+      "reconfigure": {
+        "title": "Changer de contrat",
+        "description": "Choisissez le contrat actif dont vous souhaitez suivre la consommation. Si vous changez de contrat, l'historique est ré-importé.",
+        "data": {
+          "contract_token": "Contrat"
+        }
       }
     },
     "error": {
       "invalid_auth": "Identifiants incorrects. Vérifiez votre e-mail et mot de passe.",
       "cannot_connect": "Impossible de contacter le serveur Eau du Grand Lyon.",
-      "unknown": "Erreur inattendue. Consultez les journaux de Home Assistant."
+      "unknown": "Erreur inattendue. Consultez les journaux de Home Assistant.",
+      "no_active_contract": "Aucun contrat actif sur ce compte. Seuls les contrats actifs fournissent des données de consommation."
     },
     "abort": {
       "already_configured": "Ce compte est déjà configuré.",
-      "reauth_successful": "Ré-authentification réussie."
+      "reauth_successful": "Ré-authentification réussie.",
+      "reconfigure_successful": "Contrat mis à jour.",
+      "invalid_auth": "Identifiants refusés par Eau du Grand Lyon. Ré-authentifiez l'intégration.",
+      "cannot_connect": "Impossible de contacter le serveur Eau du Grand Lyon.",
+      "no_active_contract": "Aucun contrat actif sur ce compte.",
+      "unknown": "Erreur inattendue. Consultez les journaux de Home Assistant."
     }
   },
   "options": {

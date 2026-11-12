@@ -183,7 +183,11 @@ class EGLDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"Erreur API EGL : {err}") from err
 
         if not entries:
-            _LOGGER.warning("EGL: aucune donnée reçue, conservation de l'état précédent")
+            _LOGGER.warning(
+                "EGL: aucune donnée reçue, conservation de l'état précédent. "
+                "Si le contrat suivi est cessé, choisissez le contrat actif via "
+                "« Reconfigurer » dans Appareils et services."
+            )
             return self.data or {}
 
         # --- Écrasement systématique de la fenêtre dans recorder ---
