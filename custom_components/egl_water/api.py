@@ -148,6 +148,7 @@ class EGLClient:
 
     `session` doit disposer d'un cookie jar (le login repose sur un cookie de
     session) ; voir homeassistant.helpers.aiohttp_client.async_create_clientsession.
+    Le client ne ferme jamais la session : Home Assistant en est propriétaire.
     """
 
     def __init__(self, session: aiohttp.ClientSession, username: str, password: str) -> None:
@@ -158,10 +159,17 @@ class EGLClient:
         self._token_expiry: datetime | None = None
         self._auth_lock = asyncio.Lock()
 
-    async def close(self) -> None:
-        """Ferme la session HTTP."""
-        if not self._session.closed:
-            await self._session.close()
+    def clear_session(self) -> None:
+        """Oublie les cookies et tokens de ce client.
+
+        La session aiohttp est créée par les helpers de Home Assistant, qui la
+        referment eux-mêmes à l'arrêt : l'intégration ne doit jamais appeler
+        `session.close()` (Home Assistant le signale). On se contente donc de
+        ne pas laisser traîner le cookie de session EGL en mémoire.
+        """
+        self._session.cookie_jar.clear()
+        self._bearer_token = None
+        self._token_expiry = None
 
     # ------------------------------------------------------------------
     # Requêtes

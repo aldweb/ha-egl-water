@@ -75,7 +75,7 @@ async def _check_credentials(hass: HomeAssistant, username: str, password: str) 
     try:
         await client.authenticate()
     finally:
-        await client.close()
+        client.clear_session()
 
 
 async def _fetch_active_contracts(
@@ -93,7 +93,7 @@ async def _fetch_active_contracts(
         await client.authenticate()
         contracts = await client.get_contracts()
     finally:
-        await client.close()
+        client.clear_session()
     active = [c for c in contracts if c.active]
     if not active:
         raise NoActiveContractError

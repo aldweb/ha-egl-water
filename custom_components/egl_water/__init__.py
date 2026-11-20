@@ -27,7 +27,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: EGLConfigEntry) -> bool:
     # (la session partagée de Home Assistant n'en conserve pas).
     session = async_create_clientsession(hass, cookie_jar=aiohttp.CookieJar())
     client = EGLClient(session, entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD])
-    entry.async_on_unload(client.close)
+    entry.async_on_unload(client.clear_session)
 
     coordinator = EGLDataCoordinator(hass, entry, client, entry.data[CONF_CONTRACT_TOKEN])
 
