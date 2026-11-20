@@ -15,16 +15,36 @@
         "data": {
           "password": "Password"
         }
+      },
+      "contract": {
+        "title": "Select a contract",
+        "description": "Several active contracts were found on this account. Choose the one whose consumption you want to track.",
+        "data": {
+          "contract_token": "Contract"
+        }
+      },
+      "reconfigure": {
+        "title": "Change contract",
+        "description": "Choose the active contract whose consumption you want to track. If you switch contract, the history is re-imported.",
+        "data": {
+          "contract_token": "Contract"
+        }
       }
     },
     "error": {
       "invalid_auth": "Invalid credentials. Please check your email address and password.",
       "cannot_connect": "Unable to reach the Eau du Grand Lyon server.",
-      "unknown": "Unexpected error. Check the Home Assistant logs for details."
+      "unknown": "Unexpected error. Check the Home Assistant logs for details.",
+      "no_active_contract": "No active contract on this account. Only active contracts provide consumption data."
     },
     "abort": {
       "already_configured": "This account is already configured.",
-      "reauth_successful": "Re-authentication successful."
+      "reauth_successful": "Re-authentication successful.",
+      "reconfigure_successful": "Contract updated.",
+      "invalid_auth": "Credentials rejected by Eau du Grand Lyon. Re-authenticate the integration.",
+      "cannot_connect": "Unable to reach the Eau du Grand Lyon server.",
+      "no_active_contract": "No active contract on this account.",
+      "unknown": "Unexpected error. Check the Home Assistant logs for details."
     }
   },
   "options": {

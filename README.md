@@ -82,6 +82,11 @@ Copiez le dossier `custom_components/egl_water/` dans `config/custom_components/
 2. Recherchez **Eau du Grand Lyon**
 3. Saisissez l'e-mail et le mot de passe de votre espace client agence.eaudugrandlyon.com
 
+Si votre compte comporte **plusieurs contrats**, seuls les contrats **actifs** sont proposés :
+- un seul contrat actif → il est sélectionné automatiquement, sans question ;
+- plusieurs contrats actifs → vous choisissez celui à suivre ;
+- aucun contrat actif → la configuration est refusée (les contrats cessés ne renvoient aucune consommation).
+
 L'intégration se connecte, vérifie les identifiants, puis lance en arrière-plan l'**import historique** (2 ans de données). Ce processus prend quelques minutes ; les capteurs sont immédiatement disponibles avec les données du jour.
 
 ### Options (modifiables après installation)
@@ -95,6 +100,10 @@ Accédez aux options via **Paramètres** → **Appareils et services** → **Eau
 | Tarif €/m³ TTC | `3,56` | Tarif tout compris pour le calcul du coût estimé |
 
 > Si vous modifiez le tarif, l'historique des coûts est **recalculé automatiquement** sur l'ensemble de l'historique importé.
+
+### Changer de contrat
+
+Contrat cessé, déménagement, nouveau contrat : **Paramètres** → **Appareils et services** → **Eau du Grand Lyon** → menu **⋮** → **Reconfigurer**, puis choisissez le contrat actif. Aucune suppression de l'intégration n'est nécessaire ; en cas de changement de contrat, l'historique est ré-importé.
 
 ---
 
@@ -154,6 +163,7 @@ Au premier démarrage, l'intégration importe jusqu'à **2 ans** de données en 
 |----------|---------------|----------|
 | Erreur `invalid_auth` au démarrage | Identifiants incorrects | Vérifiez e-mail et mot de passe sur agence.eaudugrandlyon.com |
 | Erreur `cannot_connect` | API EGL indisponible | Réessayez ultérieurement ; l'intégration se rétablira automatiquement |
+| Capteurs à `unknown` et log « aucune donnée reçue » | Le contrat suivi est cessé (compte à plusieurs contrats) | **Reconfigurer** l'intégration et choisir le contrat actif |
 | Capteurs bloqués à `unavailable` | Problème réseau ou changement d'API | Consultez les logs HA |
 | Import historique très long | Normal pour 2 ans de données | Patienter quelques minutes ; les capteurs fonctionnent pendant l'import |
 | Coût non recalculé après changement de tarif | Recalcul en cours en arrière-plan | Patienter quelques minutes |
